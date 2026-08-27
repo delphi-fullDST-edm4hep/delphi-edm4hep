@@ -28,9 +28,8 @@
 
 namespace delphi_edm4hep::aabtag {
 
-// Hard cap baked into the AABTAG commons. Events with more tracks than
-// this are TRUNCATED by AABTAG itself — callers must check NTRK against
-// it and flag rather than assume full coverage.
+// Hard cap baked into the AABTAG commons. NTRK saturates at this value, so
+// reaching it means additional eligible tracks may have been truncated.
 inline constexpr int kMaxTracks = 100;
 
 extern "C" {
@@ -100,6 +99,32 @@ struct AamnvxCommon {
 };
 extern AamnvxCommon aamnvx_;
 
+// COMMON /AAFLAG/ — AABTAG steering and per-event status. Most members are
+// Fortran LOGICAL*4; IBAD (the fifth slot) and IFBFLA are INTEGER*4.
+// IBAD=0 means the tag/PV processing succeeded; 1 is a general processing
+// failure (for example beamspot/thrust/calibration), and 2 is a vertex-fit
+// failure. On failure some AAMNVX arrays can retain stale pre-fit values.
+// Moreover, PSFBTG does not call AABTGS at all when IERRBS != 0, so IBAD then
+// remains a snapshot from an earlier event. Never use it as a current-event
+// validity bit without the separate invocation state (AabtagStatus.h).
+struct AaflagCommon {
+  std::int32_t ifclbr;
+  std::int32_t iftcor;
+  std::int32_t if91;
+  std::int32_t ifk0ls;
+  std::int32_t ibad;
+  std::int32_t ifold;
+  std::int32_t ifrfix;
+  std::int32_t ifk0st;
+  std::int32_t ifjets;
+  std::int32_t ifstcm;
+  std::int32_t ifbcon;
+  std::int32_t ifbfla;
+  std::int32_t ifbcvx;
+  std::int32_t ifspot;
+};
+extern AaflagCommon aaflag_;
+
 }  // extern "C"
 
 // Sizes reported by the shipped archives. A mismatch means the release's
@@ -108,6 +133,8 @@ static_assert(sizeof(AamainCommon) == 46408,
               "AAMAIN layout mismatch vs the DELPHI release (expected 0xb548)");
 static_assert(sizeof(AamnvxCommon) == 3252,
               "AAMNVX layout mismatch vs the DELPHI release (expected 0xcb4)");
+static_assert(sizeof(AaflagCommon) == 56,
+              "AAFLAG layout mismatch vs the DELPHI release (expected 0x38)");
 
 // ---- 1-based accessors, matching the skelana/*.hpp convention ----------
 
@@ -137,5 +164,6 @@ inline float&        SIGIMP(int i)      { return aamnvx_.sigimp[i - 1]; }
 inline float&        EZED  (int i)      { return aamnvx_.ezed  [i - 1]; }
 inline float&        SIGZED(int i)      { return aamnvx_.sigzed[i - 1]; }
 inline std::int32_t& INMVX (int i)      { return aamnvx_.inmvx [i - 1]; }
+inline std::int32_t& IBAD()              { return aaflag_.ibad; }
 
 }  // namespace delphi_edm4hep::aabtag

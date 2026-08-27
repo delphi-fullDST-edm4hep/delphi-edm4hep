@@ -8,9 +8,13 @@
 #include "delphi_edm4hep/Btag/Btag.h"
 
 #include "delphi_edm4hep/internal/AabtagCommons.h"
+#include "delphi_edm4hep/internal/AabtagStatus.h"
+#include "delphi_edm4hep/internal/BtagProvenance.h"
 #include "delphi_edm4hep/internal/PaWalk.h"
 
+#include "skelana/pscbsp.hpp"
 #include "skelana/pscbtg.hpp"
+#include "skelana/pscflg.hpp"
 
 #include <edm4hep/VertexCollection.h>
 #include <podio/UserDataCollection.h>
@@ -45,57 +49,94 @@ constexpr int kAlgoBtagPV = 3;
 // can legitimately reach it.
 float prob(float v) { return (v >= 1.999f) ? kNaN : v; }
 
+// LUTHRU reports failure with THRVAL=-1 or -2; PSCBTG otherwise uses the 2.0
+// prefill sentinel. Physical thrust is in [0,1], so map both failure domains.
+float thrustValue(float v) { return (v < 0.f || v >= 1.999f) ? kNaN : v; }
+
 }  // namespace
 
 void BtagWriter::emit()
 {
-  // Record the configuration unconditionally, so a consumer can tell a
-  // b-tag-PV file from a DELANA-PV file (and a no-b-tag file from one
-  // where AABTAG simply produced nothing) without guessing from which
-  // collections happen to be present.
+  // Record the b-tag mode unconditionally, so a consumer can distinguish a
+  // no-b-tag file from one where AABTAG simply produced nothing without
+  // guessing from which collections happen to be present. The separate
+  // --btag-pv compatibility switch is documented by the CLI; it does not
+  // change which AABTAG collections are emitted.
   putParameter("BTAGCFG", "Mode",
                std::string(mode_ == BtagMode::Off    ? "off"
                          : mode_ == BtagMode::Bank   ? "bank"
                                                      : "recalc"));
   putParameter("BTAGCFG", "Recalculated", recalculated() ? 1 : 0);
+  // These fields deliberately live under the writer's source prefix. Pass 2
+  // carries the copied sDST_EVT_* identity parameters but has no fDST_EVT_*
+  // domain, so sDST_EVT_BeamSpotErrorCode is not valid evidence for which
+  // beamspot status governed the fDST AABTAG invocation. Serialize the live
+  // current-pass value beside the b-tag payload instead.
+  putParameter("BTAGCFG", "SourcePrefix", std::string(source_tag_));
+  putParameter("BTAGCFG", "BeamSpotErrorCode", sk::IERRBS);
+  putParameter("BTAGCFG", "PrimaryVertexPolicy",
+               std::string(provenance::primaryVertexPolicy(sk::IFLPVT)));
+  // Retain the raw steering word as well as the stable semantic label. This
+  // makes the legacy --btag-pv compatibility mode auditable without forcing
+  // downstream code to know the Fortran flag convention.
+  putParameter("BTAGCFG", "IFLPVT", sk::IFLPVT);
 
   if (mode_ == BtagMode::Off) return;
 
   const std::string_view bank = mnemonic();
+  const bool reran = recalculated();
+  // AAFLAG is meaningful only when PSFBTG actually called AABTGS. PSFBTG
+  // skips that call when IERRBS != 0 and leaves IBAD (and the rich COMMON
+  // arrays) stale. Failed AABTAG events can retain derived values too, so gate
+  // the entire rich payload on the combined current-event status rather than
+  // sanitizing one field at a time.
+  const auto status = aa::eventStatus(sk::IERRBS, reran ? aa::IBAD() : 0);
+  const bool tagValid = !reran || status.valid;
+  const auto eventProb = [&](float value) {
+    return tagValid ? prob(value) : kNaN;
+  };
 
   // ---- Event / hemisphere probabilities (PSCBTG; both modes) ----------
   // Index order within each triplet is (hemisphere 1, hemisphere 2, whole
   // event), matching QBTPRN/QBTPRP/QBTPRS(1..3).
   putParameter(bank, "ProbNegIP",
-               std::vector<float>{prob(sk::QBTPRN(1)), prob(sk::QBTPRN(2)),
-                                  prob(sk::QBTPRN(3))});
+               std::vector<float>{eventProb(sk::QBTPRN(1)),
+                                  eventProb(sk::QBTPRN(2)),
+                                  eventProb(sk::QBTPRN(3))});
   putParameter(bank, "ProbPosIP",
-               std::vector<float>{prob(sk::QBTPRP(1)), prob(sk::QBTPRP(2)),
-                                  prob(sk::QBTPRP(3))});
+               std::vector<float>{eventProb(sk::QBTPRP(1)),
+                                  eventProb(sk::QBTPRP(2)),
+                                  eventProb(sk::QBTPRP(3))});
   putParameter(bank, "ProbAllIP",
-               std::vector<float>{prob(sk::QBTPRS(1)), prob(sk::QBTPRS(2)),
-                                  prob(sk::QBTPRS(3))});
+               std::vector<float>{eventProb(sk::QBTPRS(1)),
+                                  eventProb(sk::QBTPRS(2)),
+                                  eventProb(sk::QBTPRS(3))});
   // The thrust axis gets the same sentinel treatment: VFILL sets it to 2.0
   // as well, and a direction cosine can never legitimately exceed 1, so an
   // un-mapped 2.0 here would be a sentinel masquerading as data. (Caught by
   // running --btag bank on a real short DST, where the BTAG bank is absent
   // and every PSCBTG word is left at 2.0.)
   putParameter(bank, "ThrustAxis",
-               std::vector<float>{prob(sk::QBTTHR(1)), prob(sk::QBTTHR(2)),
-                                  prob(sk::QBTTHR(3))});
+               std::vector<float>{eventProb(sk::QBTTHR(1)),
+                                  eventProb(sk::QBTTHR(2)),
+                                  eventProb(sk::QBTTHR(3))});
   // QBTTHR(4) is the thrust VALUE, not an axis component. (delphi-nanoaod
   // drops it; we keep it -- it is free and the axis alone is not enough to
   // reproduce a thrust-based hemisphere split.)
-  putParameter(bank, "ThrustValue", prob(sk::QBTTHR(4)));
+  putParameter(bank, "ThrustValue",
+               tagValid ? thrustValue(sk::QBTTHR(4)) : kNaN);
 
-  if (!recalculated()) return;
+  if (!reran) return;
 
-  // ---- AABTAG primary vertex (AAMNVX) --------------------------------
+  // ---- AABTAG primary-vertex output (AAMNVX) -------------------------
   // Emitted as its own collection rather than replacing the DELANA PV.
+  // The collection is empty when Valid != 1. A nonempty entry still
+  // needs NDF/NTracksAttached checks before it is described as track-fitted;
+  // a status-zero result can be a beamspot-only constraint.
   // With IFLPVT = Keep (the default) SKELANA never overwrites QVTX, so a
   // consumer gets both vertices and picks; nothing is destroyed.
   edm4hep::VertexCollection btagPv;
-  {
+  if (tagValid) {
     auto pv = btagPv.create();
     pv.setPrimary(true);
     pv.setAlgorithmType(kAlgoBtagPV);
@@ -111,22 +152,45 @@ void BtagWriter::emit()
   put(std::move(btagPv), bank, "PrimaryVertex");
 
   // ---- Per-track quantities (AAMAIN + AAMNVX) ------------------------
-  // AABTAG's arrays are dimensioned kMaxTracks; a busier event is
-  // truncated by AABTAG itself. Clamp and record the fact rather than
-  // reading past the end or pretending the coverage was complete.
-  const int ntrk_raw = aa::NTRK();
-  const int ntrk     = std::clamp(ntrk_raw, 0, aa::kMaxTracks);
+  // AABTAG's arrays are dimensioned kMaxTracks. Its NTRK common saturates at
+  // that capacity, so exact truncation is not observable; record capacity
+  // saturation conservatively rather than claiming that extra tracks existed.
+  // NTRK belongs to the current event only if AABTGS was called. On the
+  // beam-spot bypass it is stale by construction, so serialize zero rather
+  // than mislabelling a preceding event's count as raw current-event data.
+  const int ntrk_raw = status.algorithmInvoked ? aa::NTRK() : 0;
+  const int ntrk = tagValid ? std::clamp(ntrk_raw, 0, aa::kMaxTracks) : 0;
+  // BadEventCode deliberately preserves the raw AAFLAG/IBAD snapshot. It is
+  // current-event status only when AlgorithmInvoked=1; on the PSFBTG beamspot
+  // bypass it can be stale. Valid is the authoritative combined gate.
+  putParameter(bank, "BadEventCode",     status.badEventCode);
+  putParameter(bank, "AlgorithmInvoked", status.algorithmInvoked ? 1 : 0);
+  putParameter(bank, "Valid",            status.valid ? 1 : 0);
+  putParameter(bank, "NTracksRaw",       std::clamp(ntrk_raw, 0, aa::kMaxTracks));
   putParameter(bank, "NTracks",         ntrk);
-  putParameter(bank, "NTracksAttached", aa::NATTVX());
-  putParameter(bank, "Truncated",       ntrk_raw > aa::kMaxTracks ? 1 : 0);
+  putParameter(bank, "NTracksAttached", tagValid ? aa::NATTVX() : 0);
+  // Retain the established field name for campaign compatibility. Its value
+  // is deliberately conservative: 1 means the common reached capacity and
+  // additional eligible tracks may (but cannot be proven to) have been lost.
+  putParameter(bank, "Truncated",
+               tagValid && ntrk_raw >= aa::kMaxTracks ? 1 : 0);
 
   // lpa -> PA-walk index, so IADTR (a ZEBRA L-address) can be resolved to
   // the Particle the Tracking domain emitted for that PA.
   std::unordered_map<int, int> lpa_to_pa;
   pawalk::forEachPA([&](int lpa, int paIdx) { lpa_to_pa.emplace(lpa, paIdx); });
 
-  const std::vector<int>* pa_to_particle =
-      ctx_.tracking ? &ctx_.tracking->pa_to_particle : nullptr;
+  // Pass 1 has TrackingWriter's direct PA -> emitted-particle map. Pass 2
+  // instead has MatchProvenanceWriter's fDST PA -> sDST particle map; the
+  // fDST_MAIN collection is a one-to-one clone, so those indices are also the
+  // correct fDST_MAIN indices. Without this fallback every pass-2 index was
+  // silently written as -1.
+  const std::vector<int>* pa_to_particle = nullptr;
+  if (ctx_.tracking) {
+    pa_to_particle = &ctx_.tracking->pa_to_particle;
+  } else if (ctx_.fdst_pa_to_sdst_particle) {
+    pa_to_particle = &*ctx_.fdst_pa_to_sdst_particle;
+  }
 
   podio::UserDataCollection<std::int32_t> particleIdx;
   podio::UserDataCollection<float>        impRPhi, impRPhiErr;
@@ -166,6 +230,8 @@ void BtagWriter::emit()
 
     usedForTag  .push_back(aa::ISRT(i));      // 0 = not used, > 0 = used
     attachedToPv.push_back(aa::INMVX(i) ? 1 : 0);
+    // These count-like legacy values are signed: AAP* efficiency/acceptance
+    // corrections negate them to mark rejection; abs(value) is the count.
     nHitsRPhi   .push_back(aa::NVDP (i));
     nHitsZ      .push_back(aa::NVDPZ(i));
     nLayersRPhi .push_back(aa::NLAY (i));

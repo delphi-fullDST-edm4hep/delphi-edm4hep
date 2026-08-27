@@ -153,6 +153,14 @@ target_link_libraries(delphi_bs_fit
   PRIVATE EDM4HEP::edm4hep podio::podio podio::podioRootIO ROOT::Core ROOT::RIO
 )
 
+# Integrity/provenance check used by resumable b-tag conversion campaigns.
+# Standalone EDM4hep/podio/ROOT tool: it does not load the DELPHI runtime.
+add_executable(delphi_btag_check bin/delphi_btag_check.cpp)
+target_include_directories(delphi_btag_check PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(delphi_btag_check
+  PRIVATE EDM4HEP::edm4hep podio::podio podio::podioRootIO ROOT::Core ROOT::RIO
+)
+
 # ---------------------------------------------------------------------------
 # Tests (subtask 5+; for now just smoke).
 enable_testing()
@@ -164,6 +172,7 @@ endif()
 # Install rules.
 include(GNUInstallDirs)
 install(TARGETS delphi_edm4hep delphi_sdst_pass delphi_fdst_pass delphi_bs_fit
+                delphi_btag_check
   EXPORT  delphi_edm4hepTargets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}

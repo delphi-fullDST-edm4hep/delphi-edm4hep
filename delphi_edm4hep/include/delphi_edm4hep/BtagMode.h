@@ -23,17 +23,19 @@
 namespace delphi_edm4hep {
 
 enum class BtagMode {
-  // IFLBTG = 0. AABTAG is not run at all. The default: the converter's
-  // job is to transcribe DST content, and a b-tag rerun is a new
-  // reconstruction, not a transcription.
+  // IFLBTG = 0. AABTAG is not run at all. BtagWriter still records its
+  // source-local BTAGCFG steering/status provenance, but emits no BTG/AABTAG
+  // payload. The default: the converter's job is to transcribe DST content,
+  // and a b-tag rerun is a new reconstruction, not a transcription.
   Off,
-  // IFLBTG = 1. ShortDST: read the official stored BTAG bank (cheap, and
-  // the authoritative DELPHI number). FullDST: SKELANA recalculates
-  // regardless — see the dispatch above.
+  // IFLBTG = 1. ShortDST: read the legacy stored BTAG bank. This remains a
+  // low-level compatibility mode for historical closure only; current
+  // production uses Recalc. FullDST: SKELANA recalculates regardless — see
+  // the dispatch above.
   Bank,
-  // IFLBTG = 2. Recalculate with AABTAG on both passes. Only this mode
-  // populates the per-track AAMAIN / AAMNVX commons that the
-  // jet-probability inputs come from.
+  // IFLBTG = 2. Recalculate with AABTAG on both passes. Recalculation (this
+  // mode on either pass, or Bank on a fullDST) populates the per-track
+  // AAMAIN / AAMNVX commons that the jet-probability inputs come from.
   Recalc,
 };
 

@@ -3,9 +3,10 @@
 // Emits DELPHI b-tagging output. What is available depends on the job's
 // BtagMode (see BtagMode.h):
 //
-//   Off     nothing.
-//   Bank    the PSCBTG event/hemisphere probabilities, read from the
-//           official stored BTAG bank. Emitted under the BTG mnemonic.
+//   Off     source-local BTAGCFG provenance only; no b-tag payload.
+//   Bank    on a shortDST, the PSCBTG event/hemisphere probabilities read
+//           from the official stored BTAG bank and emitted under BTG; on a
+//           fullDST, SKELANA recalculates and output is emitted under AABTAG.
 //   Recalc  the same probabilities, recalculated by AABTAG, PLUS the
 //           per-track quantities from the AAMAIN / AAMNVX commons and
 //           AABTAG's own primary vertex. Emitted under AABTAG.
