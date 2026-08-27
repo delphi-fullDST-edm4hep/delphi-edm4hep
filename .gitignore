@@ -24,3 +24,8 @@ R[0-9]*.al
 
 # CI build tree
 build/
+build-prefix-*/
+build-pr-*/
+
+# Local conversion and validation campaigns (large generated artifacts).
+reruns/
