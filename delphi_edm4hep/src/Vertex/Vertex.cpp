@@ -2,9 +2,10 @@
 //
 // Reads PSCVTX (reco PV chain + simulation PV chain), PSCBSP (beam spot),
 // PSCRV0 (Delphi-official V0), PSCPHC (photon conversions). All positions
-// converted from DELPHI cm to EDM4hep mm. Vertex-to-Particle relations
-// (V0 daughters, photon-conversion e+/e-) built via the tracking output's
-// vecp_to_particle map.
+// converted from DELPHI cm to EDM4hep mm. Vertex-to-Particle relations are
+// collection-specific: the reco PV chain carries DELPHI's outgoing PA
+// assignment, while V0 and photon-conversion vertices carry their fitted
+// daughters.
 
 #include "delphi_edm4hep/Vertex/Vertex.h"
 
@@ -25,6 +26,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -43,11 +45,32 @@ constexpr float  kCm2Mm2_f = static_cast<float>(kCm2Mm * kCm2Mm);
 // Algorithm-type tags on edm4hep::Vertex. Arbitrary but stable across
 // the library; downstream consumers can branch on these.
 constexpr int kAlgoPrimary    = 0;
-constexpr int kAlgoSecondary  = 1;
+// Any reconstructed-chain entry that is not the event primary, including a
+// dummy beamspot bucket. The raw status bits distinguish dummy/secondary
+// semantics; algorithmType intentionally makes only the primary/non-primary
+// distinction.
+constexpr int kAlgoNonPrimaryReco = 1;
 constexpr int kAlgoBeamSpot   = 2;
 constexpr int kAlgoSimulation = 4;
 constexpr int kAlgoV0         = 10;
 constexpr int kAlgoPhotonConv = 11;
+
+// DELPHI PSCVTX/LPV status bits (KVTX(17,j) / IQ(lpv)). Bit 1 marks a
+// dummy vertex and bit 2 a secondary vertex. A dummy first slot is the
+// unfitted beam-spot bucket and must never be published as the event PV.
+constexpr std::int32_t kStatusDummy     = 0x01;
+constexpr std::int32_t kStatusSecondary = 0x02;
+constexpr int kMaxRecoVertices = 150;  // DELPHI NVTXMX cap
+
+constexpr bool isPrimaryRecoVertex(bool first, std::int32_t status) {
+  return first &&
+         (status & (kStatusDummy | kStatusSecondary)) == 0;
+}
+
+static_assert(isPrimaryRecoVertex(true, 0));
+static_assert(!isPrimaryRecoVertex(true, kStatusDummy));
+static_assert(!isPrimaryRecoVertex(true, kStatusSecondary));
+static_assert(!isPrimaryRecoVertex(false, 0));
 
 // Fill the geometric content of a Vertex from PSCVTX entry j. Pulls
 // position (cm->mm), covariance (cm^2 -> mm^2), chi^2, and ndf.
@@ -70,10 +93,9 @@ void fillFromPSCVTX(edm4hep::MutableVertex vtx, int j) {
 }
 
 // Fill a Vertex from the raw ZEBRA vertex bank at offset lpv (the
-// LQ(LDTOP-1) chain). This is the DELANA reco PV chain that IS populated
-// in real DATA, where the SKELANA PSCVTX common is left at the -999
-// sentinel. Layout mirrors delphi-raw-nanoaod's fillVtx (the source of
-// the "good legacy Vtx[0]" the analysis uses): Q(lpv+5..7) = position cm,
+// LQ(LDTOP-1) chain). This is the DELANA reco PV chain used whenever the
+// SKELANA PSCVTX primary slot is unavailable. Layout mirrors
+// delphi-raw-nanoaod's fillVtx: Q(lpv+5..7) = position cm,
 // Q(lpv+8) = chi2, IQ(lpv+3) = ndf, Q(lpv+9..14) = error matrix.
 void fillFromLDTOP(edm4hep::MutableVertex vtx, int lpv) {
   vtx.setPosition({
@@ -93,9 +115,9 @@ void fillFromLDTOP(edm4hep::MutableVertex vtx, int lpv) {
   });
 }
 
-// PSCVTX gives a usable primary vertex? In real data the common is filled
-// with the -999 cm sentinel; MC fills it for real. Used to decide whether
-// to fall back to the raw ZEBRA chain.
+// Does PSCVTX carry a geometrically usable first slot? SKELANA can populate
+// this common for both data and MC; the -999 cm sentinel selects the raw
+// ZEBRA-chain fallback. Dummy status is handled separately below.
 bool pscvtxPrimaryUsable() {
   return sk::NVTX >= 1 && sk::QVTX(6, 1) > -990.0f;
 }
@@ -137,15 +159,16 @@ void VertexWriter::emit()
 
   // Reco vertices captured in creation order (== LPV-chain order on both the
   // PSCVTX and LDTOP paths) + a handle to the standalone PrimaryVertex copy,
-  // so the per-vertex constituent particles can be wired in after creation.
+  // so the per-vertex outgoing-particle assignments can be wired in after
+  // creation.
   std::vector<edm4hep::MutableVertex> recoVtx;
   edm4hep::MutableVertex pvHandle{};
   bool havePvHandle = false;
 
   // ----- Reconstructed PV chain (PSCVTX entries 1..NVTX) -----
-  // Convention: entry j=1 is the primary vertex unless status bit 2
-  // (secondary) is set on it. The full chain is also emitted into
-  // `Vertices` with the per-entry status bits.
+  // Convention: entry j=1 is the primary vertex unless status bit 1 (dummy)
+  // or bit 2 (secondary) is set. The full chain, including dummy entries, is
+  // also emitted into `Vertices` with the raw per-entry status bits.
   //
   // PXTAG D⁰/D±/Dₛ-candidate bits (5+) in IQ(LPV) per dst_content.txt
   // p.3 are preserved verbatim in the `Vertices_StatusBits` UserData
@@ -157,14 +180,14 @@ void VertexWriter::emit()
   bool   have_pv = false;
 
   if (pscvtxPrimaryUsable()) {
-    // MC (and any data where SKELANA filled PSCVTX): use the common.
+    // Use the SKELANA common when its first slot is geometrically available.
     for (int j = 1; j <= sk::NVTX; ++j) {
       const std::int32_t status = sk::KVTX(17, j);
-      const bool is_primary = (j == 1) && ((status & 0x02) == 0);
+      const bool is_primary = isPrimaryRecoVertex(j == 1, status);
 
       auto vtx = vtxCol.create();
       vtx.setPrimary(is_primary);
-      vtx.setAlgorithmType(is_primary ? kAlgoPrimary : kAlgoSecondary);
+      vtx.setAlgorithmType(is_primary ? kAlgoPrimary : kAlgoNonPrimaryReco);
       fillFromPSCVTX(vtx, j);
       statusBits.push_back(status);
       recoVtx.push_back(vtx);
@@ -180,19 +203,17 @@ void VertexWriter::emit()
       }
     }
   } else {
-    // DATA path: PSCVTX is the -999 sentinel. Read the DELANA reco vertex
-    // chain straight from the raw ZEBRA store at LQ(LDTOP-1) — the same
-    // bank delphi-raw-nanoaod reads as the (good) legacy Vtx[0].
+    // PSCVTX is unavailable: read the DELANA reco vertex chain straight from
+    // the raw ZEBRA store at LQ(LDTOP-1).
     int lpv = (ph::LDTOP > 0) ? ph::LQ(ph::LDTOP - 1) : 0;
     int count = 0;
-    const int kMax = 150;   // DELPHI NVTXMX cap
-    while (lpv > 0 && count < kMax) {
+    while (lpv > 0 && count < kMaxRecoVertices) {
       const std::int32_t status = ph::IQ(lpv);
-      const bool is_primary = (count == 0) && ((status & 0x02) == 0);
+      const bool is_primary = isPrimaryRecoVertex(count == 0, status);
 
       auto vtx = vtxCol.create();
       vtx.setPrimary(is_primary);
-      vtx.setAlgorithmType(is_primary ? kAlgoPrimary : kAlgoSecondary);
+      vtx.setAlgorithmType(is_primary ? kAlgoPrimary : kAlgoNonPrimaryReco);
       fillFromLDTOP(vtx, lpv);
       statusBits.push_back(status);
       recoVtx.push_back(vtx);
@@ -211,21 +232,29 @@ void VertexWriter::emit()
     }
   }
 
-  // ----- Wire each reco vertex -> its constituent particles -----
-  // The raw LPV chain (LQ(LDTOP-1)) lists, per reco vertex, its constituent PA
-  // sub-chain at LQ(lpv-1); the running paIdx matches tracking.pa_to_particle
-  // (built by the same forEachPA walk), so each PA maps to its emitted Particle.
-  // recoVtx[i] is the i-th lpv (vertices were created in chain order on both
-  // paths). Previously only V0/PHC vertices wired daughters; the PV/secondary
-  // chain was left unlinked, losing the vertex->constituent relation.
+  // ----- Wire each reco vertex -> its outgoing-particle assignment -----
+  // DELPHI documents the PA sub-chain at LQ(lpv-1) as outgoing particles,
+  // not as the tracks used by the vertex fit. Keep that faithful meaning here;
+  // AABTAG fit membership is published separately by the Btag writer. The
+  // running pa_idx matches tracking.pa_to_particle (built by the same
+  // forEachPA walk), so each PA maps to its emitted Particle.
   {
     const auto& pa2p = tracking.pa_to_particle;
     int pa_idx = 0;
-    std::size_t vi = 0;
     const int ldtop = ph::LDTOP;
+    std::vector<int> lpvChain;
     for (int lpv = (ldtop > 0) ? ph::LQ(ldtop - 1) : 0;
-         lpv > 0 && vi < recoVtx.size();
-         lpv = ph::LQ(lpv), ++vi) {
+         lpv > 0 && lpvChain.size() < static_cast<std::size_t>(kMaxRecoVertices);
+         lpv = ph::LQ(lpv)) {
+      lpvChain.push_back(lpv);
+    }
+    if (lpvChain.size() != recoVtx.size()) {
+      throw std::runtime_error(
+          "PSCVTX/reco vertex count does not match the raw LPV chain; "
+          "refusing to attach outgoing particles by ordinal");
+    }
+    for (std::size_t vi = 0; vi < lpvChain.size(); ++vi) {
+      const int lpv = lpvChain[vi];
       auto vtx = recoVtx[vi];
       for (int lpa = ph::LQ(lpv - 1); lpa > 0; lpa = ph::LQ(lpa), ++pa_idx) {
         if (pa_idx < static_cast<int>(pa2p.size()) && pa2p[pa_idx] >= 0)
