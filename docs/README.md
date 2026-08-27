@@ -42,13 +42,20 @@ still override if needed.
 ./build/delphi_sdst_pass  in.sdst  inter.edm4hep.root  [-n N] [--btag off|bank|recalc] [--btag-pv]
 ./build/delphi_fdst_pass  inter.edm4hep.root[,more...]  in.fadana  final.edm4hep.root  [-n N] [--btag ...]
 ./build/delphi_bs_fit     final.edm4hep.root  beamspot_by_run.csv    # pure podio, no DELPHI env
+./build/delphi_btag_check --source sDST [--primary-vertex-policy keep-delana|replace-with-aabtag] input.edm4hep.root data|NEG_RUN off|bank|recalc [identity-reference.root]
+./build/delphi_btag_check --source fDST [--primary-vertex-policy keep-delana|replace-with-aabtag] final.edm4hep.root data|NEG_RUN off|bank|recalc
 ```
 
 ## Tests
 
-`ctest --test-dir build` — CLI-contract checks plus `alignment_audit`, which
-is a **no-op unless** `DELPHI_EDM4HEP_SAMPLE=<file.edm4hep.root>` points at a
-converted file. Single test: `ctest --test-dir build -R alignment_audit`.
+`ctest --test-dir build` — CLI-contract checks, pure b-tag domain-boundary
+tests, and synthetic ROOT integration cases for clean/dirty `off`, wholly-NaN
+and partially-readable historical `bank`, and malformed recalc PV/track
+content. `alignment_audit` is a **no-op unless**
+`DELPHI_EDM4HEP_SAMPLE=<file.edm4hep.root>` points at a converted file. The
+two-prefix real-file integration similarly uses
+`DELPHI_EDM4HEP_TWOPASS_SAMPLE`. Single test:
+`ctest --test-dir build -R alignment_audit`.
 
 `delphi_edm4hep/tests/align_audit.py` encodes the README's "UserData array X
 is index-parallel to collection Y" contracts. Add a row whenever a new
@@ -121,16 +128,16 @@ are therefore not safely concurrent in one directory.
 The harness dedups on `(run, evt)` in `on_user02`; without it every event is
 written three times.
 
-**MC vs data divergence is a recurring trap.** Several SKELANA commons carry
-a `-999` sentinel on real data: `Vertex.cpp` falls back to the raw ZEBRA chain
-(`LQ(LDTOP-1)`) for the PV, and `sDST_TRAC_d0PV/z0PV/d0BS` (from
-`QTRAC(38..40)`) are treated as MC-only, which is why `Vertex.cpp` *also*
-emits a geometric `sDST_PV_trackD0PV/trackZ0PV/trackImpactFlag`. Those two
-families use **opposite sign conventions** (DELPHI vs LCIO) — never mix them.
-Check for the sentinel before assuming a common is populated.
+**MC vs data divergence is a recurring trap.** Some SKELANA track-impact
+commons (`QTRAC(38..40)`, emitted as `sDST_TRAC_d0PV/z0PV/d0BS`) can carry a
+`-999` sentinel, which is why `Vertex.cpp` *also* emits the geometric
+`sDST_PV_trackD0PV/trackZ0PV/trackImpactFlag`. Those two families use
+**opposite sign conventions** (DELPHI vs LCIO) — never mix them. Check for the
+sentinel before assuming a common is populated.
 
-Note that the PV sentinel may not be an MC/data property of SKELANA at all —
-see the `IFLPVT` note below.
+The PSCVTX primary slot has its own per-event geometry sentinel. `Vertex.cpp`
+falls back to the raw ZEBRA chain (`LQ(LDTOP-1)`) whenever that slot is
+unavailable; this is an availability check, not a data-versus-MC classifier.
 
 ## SKELANA configuration
 
@@ -154,8 +161,10 @@ rediscovering, all from `skelana.car` / `aabtagxx.car`:
   beamspot-failure branch (`IERRBS != 0`) writes `-999` over the position,
   destroying the DELANA vertex `PSHVTX` had already filled. This is a
   candidate explanation for the `-999`-on-data behaviour described above;
-  `sDST_EVT_BeamSpotErrorCode` carries `IERRBS`, so it is checkable on any
-  already-converted file. Default is now `IFLPVT=0`.
+  legacy sDST files `sDST_EVT_BeamSpotErrorCode` carries `IERRBS`. Current
+  output instead records the live value as
+  `<source>_BTAGCFG_BeamSpotErrorCode`, which is essential for fDST. Default is
+  now `IFLPVT=0`.
 - **`KVTX(16,1)` selects the track-selection impact-parameter basis** — PV
   when `<= 0`, beamspot (via `TBDCAE`) otherwise — and `PSFBTG` writes it. So
   `IFLPVT` changes track selection, not only the emitted vertex.

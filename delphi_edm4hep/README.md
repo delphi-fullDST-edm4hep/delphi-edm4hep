@@ -74,14 +74,22 @@ cmake --build build -j
 
 ```sh
 # Pass 1 : shortDST -> intermediate EDM4hep (sDST_* collections)
-./build/delphi_sdst_pass  input.sdst  out_sdst.edm4hep.root  [-n MAX_EVENTS]
+./build/delphi_sdst_pass  input.sdst  out_sdst.edm4hep.root  [-n MAX_EVENTS] \
+                          [--btag off|bank|recalc] [--btag-pv]
 
 # Pass 2 : intermediate + fullDST -> final EDM4hep (sDST_* + fDST_*)
 ./build/delphi_fdst_pass  out_sdst.edm4hep.root  input.fadana \
-                          out_final.edm4hep.root  [-n MAX_EVENTS]
+                          out_final.edm4hep.root  [-n MAX_EVENTS] \
+                          [--btag off|bank|recalc] [--btag-pv]
 
 # Post-processing : per-run beamspot from aggregated primary vertices
 ./build/delphi_bs_fit     out_final.edm4hep.root  beamspot_by_run.csv
+
+# Prefix-specific all-frame AABTAG validation (production policy shown)
+./build/delphi_btag_check --source sDST \
+  --primary-vertex-policy keep-delana out_final.edm4hep.root data recalc
+./build/delphi_btag_check --source fDST \
+  --primary-vertex-policy keep-delana out_final.edm4hep.root data recalc
 ```
 
 Pass 2 matches each fullDST event to the intermediate frame by
@@ -97,13 +105,13 @@ ctest --test-dir build -R cli_sdst  # a subset, by name regex
 
 Two kinds of test:
 
-- **CLI argument-contract checks** — each pass must exit nonzero on missing
-  arguments and on a non-numeric / non-positive `-n` (declared `WILL_FAIL`,
-  so `ctest` passes iff the binary rejects). These need no data files.
+- **CLI argument-contract checks** — the passes and checker must reject missing
+  or invalid arguments, including invalid source and primary-vertex-policy
+  values. These need no data files.
 - **`tests/align_audit.py`** — audits a converted EDM4hep file for the
   regression class where a UserData array is labelled parallel to the wrong
   collection, or a relation (e.g. RecDqdx → Track) is left unset. It is a
-  no-op (exit 0) unless `DELPHI_EDM4HEP_SAMPLE` points at a converted file:
+  skipped (exit 77) unless `DELPHI_EDM4HEP_SAMPLE` points at a converted file:
   ```sh
   DELPHI_EDM4HEP_SAMPLE=out_final.edm4hep.root ctest --test-dir build -R alignment_audit
   ```
@@ -131,7 +139,9 @@ How each EDM4hep datatype is populated (units: mm, GeV, ns, rad throughout):
   `tracks` / `clusters` / `particleIDs` relations.
 - **Vertex** — `position` (mm); `covMatrix` is the 6-element lower triangle
   `(XX, XY, YY, XZ, YZ, ZZ)` in mm²; `chi2`, `ndf`; `primary` flag;
-  `algorithmType`; `particles` relation to the constituent ReconstructedParticles.
+  `algorithmType`. The meaning of `particles` is collection-specific and is
+  documented below: the DELPHI PV chain stores its outgoing-particle
+  assignment, while V0 and photon-conversion vertices store fitted daughters.
 - **Cluster** — `energy`; `position` (mm) or, for direction-only detectors,
   `iTheta`/`iPhi` (rad); `type` is a sub-detector bit-mask
   (**bit 0 = HPC, bit 1 = EMF, bit 2 = HCAL, bit 3 = STIC, bit 4 = CCA**);
@@ -190,9 +200,10 @@ Per-event scalars stored as podio Frame parameters:
   and the beam spot (`d0BS`), mm; parallel to `sDST_TRAC_Tracks` (charged
   only — neutrals have no entry), NaN when no PV/BS-corrected value is
   available for that track.
-- `sDST_VECP_LVLOCK` (UserData&lt;int32&gt;) — per-particle track-quality
-  bit-mask (a set bit marks calorimeter-overlap / re-use); −1 for neutrals.
-  Parallel to `sDST_MAIN_Particles`.
+- `sDST_VECP_LVLOCK` (UserData&lt;int32&gt;) — raw per-particle DELPHI lock/status
+  mask; bit 1 marks track-selection failure and bit 32 multi-vertex/REMCLU
+  locking. Other bits are preserved without reinterpretation; −1 for
+  neutrals. Parallel to `sDST_MAIN_Particles`.
 - `sDST_MAIN_Particles` (ReconstructedParticle) — charged and neutral
   particles. The 4-momentum and mass come from the SKELANA combined-momentum
   vector (mass-hypothesis aware). `charge` = +1/−1 from the DELPHI charge code;
@@ -202,11 +213,21 @@ Per-event scalars stored as podio Frame parameters:
 **Vertices**
 
 - `sDST_PV_PrimaryVertex` (Vertex) — the event primary vertex (position + 6
-  covariance terms in mm², `chi2`, `ndf`, `primary=true`).
+  covariance terms in mm², `chi2`, `ndf`, `primary=true`). The collection is
+  empty when DELPHI's first vertex slot has the dummy or secondary status bit;
+  a dummy beam-spot bucket is never labelled as a fitted primary vertex.
 - `sDST_PV_Vertices` (Vertex) + `sDST_PV_Vertices_StatusBits`
   (UserData&lt;int32&gt;) — the full vertex chain (primary + secondary +
   simulation vertices); the parallel array carries the raw DELPHI per-vertex
-  status word (secondary / hadronic-secondary / simulation / flavour-tag bits).
+  status word (dummy / secondary / hadronic-secondary / simulation /
+  flavour-tag bits). For reconstructed-chain entries, `algorithmType = 0`
+  means the usable event primary and `algorithmType = 1` means non-primary
+  reconstructed content (including dummy beamspot buckets); the raw status
+  word carries the finer classification. For reconstructed PV-chain entries, `particles` is the
+  raw DELPHI **outgoing-PA assignment**, which can partition the event; it is
+  not the set of tracks used by the vertex fit. In particular, do not use this
+  relation for b-tag fit membership. Recalculated AABTAG publishes its own
+  vertex and explicit `Tracks_AttachedToPV` / `Tracks_ParticleIndex` arrays.
 - `sDST_BSP_BeamSpot` (Vertex, 1 entry) — the official beamspot: position with
   a diagonal covariance built from the beam widths; `algorithmType = 2` marks
   "beamspot bank, not a fit". (See also `delphi_bs_fit` in §3.)
@@ -374,23 +395,54 @@ for *any* `IFLBTG > 0`. Output is named for what actually happened —
 conversion-time rerun. `AABTAG` is deliberately not a bank mnemonic; it marks
 values the converter computed rather than read.
 
-Every frame carries `<source>_BTAGCFG_Mode` (`off`/`bank`/`recalc`) and
-`<source>_BTAGCFG_Recalculated` (0/1) regardless of setting, so a file's
-provenance is machine-readable.
+Every frame carries source-local provenance regardless of setting:
+
+- `<source>_BTAGCFG_Mode` (`off`/`bank`/`recalc`) and `Recalculated` (0/1);
+- `SourcePrefix`, which must equal the collection prefix;
+- `BeamSpotErrorCode`, the live `IERRBS` for that pass (do not substitute the
+  copied `sDST_EVT_*` value when validating new fDST content);
+- raw `IFLPVT` plus stable semantic `PrimaryVertexPolicy`: `keep-delana` for
+  the default prefix-isolated policy or `replace-with-aabtag` for the legacy
+  `--btag-pv` compatibility switch.
+
+`delphi_btag_check --primary-vertex-policy keep-delana` enforces the current
+production contract over every selected-prefix frame and reports both
+`primary_vertex_policy=keep-delana` and `iflpvt=0`. A mismatched expectation is
+a validation failure, not merely a diagnostic label.
+
+The checker also fails closed on the payload itself. A valid AABTAG vertex
+must be primary, carry `algorithmType=3`, have finite position, covariance and
+chi2, and have `ndf` in the representable AABTAG range 0--200. Track impacts
+must be finite; errors and momenta positive finite; chi2 values nonnegative
+finite; `AttachedToPV` boolean; `UsedForTag` nonnegative (it is a category code,
+not a boolean); and the signed VD hit/layer magnitudes no larger than 6/3.
+`off` asserts that neither selected-prefix payload family exists. The retained
+historical shortDST `bank` reader permits individual NaN sentinels but rejects
+a frame whose complete event-level bank payload is missing/NaN.
+
+This makes the two pass-2 b-tag payloads independently auditable even though
+event identity remains in `sDST_EVT_runNumber/eventNumber/fileSeq`; pass 2 does
+not emit an `fDST_EVT` namespace.
 
 **Event-level** (frame parameters, both modes). Each probability triplet is
 ordered *(hemisphere 1, hemisphere 2, whole event)*:
 `ProbNegIP`, `ProbPosIP`, `ProbAllIP`, `ThrustAxis` (3 components),
 `ThrustValue`. `PSFBTG` pre-fills these with `2.0` and only overwrites them
-when the beamspot is usable, so **2.0 is a "not computed" marker** — it is
-mapped to NaN on output.
+when the beamspot is usable, so **2.0 is a "not computed" marker**. LUTHRU also
+uses thrust values `-1` and `-2` for failure. These sentinels are mapped to NaN
+on output.
 
 **Per-track and vertex** (`recalc`, or `bank` on the fullDST). From AABTAG's
 `AAMAIN` / `AAMNVX` commons:
 
 - `<source>_AABTAG_PrimaryVertex` (Vertex, 1 entry, `algorithmType = 3`) —
-  AABTAG's own fitted vertex. Emitted *alongside* `sDST_PV_PrimaryVertex`,
-  never replacing it.
+  AAMNVX's vertex output. With the default configuration (without the legacy
+  `--btag-pv` switch), it is emitted *alongside* `sDST_PV_PrimaryVertex` and
+  does not replace it. Treat it as a valid fit only when its coordinates and
+  covariance are finite, `<source>_AABTAG_Valid == 1`,
+  `NTracksAttached > 0`, and `ndf > 0`.
+  A status-zero entry with no attached tracks/ndf is a beamspot-only result,
+  not a track-fitted PV. The collection is empty when `Valid != 1`.
 - `<source>_AABTAG_Tracks_*` (UserData, all mutually index-parallel, in
   AABTAG's own track order 1..`NTracks`): `ParticleIndex` (→
   `<source>_MAIN_Particles`, −1 if unresolvable), `ImpactParRPhi` /
@@ -398,10 +450,26 @@ mapped to NaN on output.
   `ProbRPhi` / `ProbZ` (per-track probabilities — the jet-probability
   ingredient), `UsedForTag` (0 = AABTAG ignored this track), `AttachedToPV`,
   `NVDHitsRPhi` / `NVDHitsZ`, `NVDLayersRPhi` / `NVDLayersZ`, `Chi2VD`,
-  `Chi2PV`, `Momentum`.
-- Frame parameters `NTracks`, `NTracksAttached`, `Truncated`. AABTAG's arrays
-  are dimensioned 100 tracks; `Truncated = 1` marks an event where it saw
-  more and clipped.
+  `Chi2PV`, `Momentum`. The four `NVD*` values are raw signed legacy outputs:
+  AAP efficiency/acceptance corrections negate a value to mark rejection, and
+  `abs(value)` is the underlying count.
+- Frame parameters `BadEventCode`, `AlgorithmInvoked`, `Valid`, `NTracksRaw`,
+  `NTracks`, `NTracksAttached`, `Truncated`. `BadEventCode` preserves AABTAG's
+  raw `IBAD` snapshot (0 success, 1 processing failure, 2 vertex-fit failure),
+  without inventing a converter-specific value. It describes the current event
+  only when `AlgorithmInvoked == 1`. PSFBTG skips AABTGS when the same-source
+  `<source>_BTAGCFG_BeamSpotErrorCode != 0` and leaves `IBAD` stale, so `Valid` is the
+  authoritative combined gate:
+  `Valid = AlgorithmInvoked && BadEventCode == 0`. When `Valid == 0`, the event
+  probabilities/thrust are NaN, the PV and per-track collections are empty,
+  and `NTracks = NTracksAttached = Truncated = 0`. `NTracksRaw` preserves the
+  saturated current-event count when the algorithm ran and is zero when it was
+  skipped. This prevents stale COMMON values from a preceding event being
+  published as valid while retaining the raw legacy diagnostic. AABTAG's
+  arrays are dimensioned 100 tracks and its counter saturates there;
+  `Truncated = 1`
+  therefore means the capacity was reached and additional eligible tracks may
+  have been clipped, not that clipping can be proved from the common alone.
 
 `ImpactParRPhi` uses AABTAG's **own sign convention**, not the LCIO `D0` sign
 of the Track collections — the sign is the physics (the negative-IP side is
