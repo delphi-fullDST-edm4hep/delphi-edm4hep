@@ -42,10 +42,10 @@ namespace harness = delphi_edm4hep::harness;
 // PHDST user-hook overrides — must live in the binary TU. Forward
 // straight to the harness (same pattern as delphi_sdst_pass).
 extern "C" {
-  void user00_()           { harness::on_user00();      }
-  void user01_(int* need)  { harness::on_user01(need);  }
-  void user02_()           { harness::on_user02();      }
-  void user99_()           { harness::on_user99();      }
+  void user00_() noexcept          { harness::on_user00();      }
+  void user01_(int* need) noexcept { harness::on_user01(need);  }
+  void user02_() noexcept          { harness::on_user02();      }
+  void user99_() noexcept          { harness::on_user99();      }
 }
 
 static void usage(const char* argv0) {

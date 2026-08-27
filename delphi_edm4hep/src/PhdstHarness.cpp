@@ -20,15 +20,21 @@
 #include "skelana/functions.hpp" // sk::psini_, sk::psbeg_
 #include "skelana/pscflg.hpp"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
+
+#include <unistd.h>
 
 namespace ph = phdst;
 namespace sk = skelana;
@@ -59,6 +65,8 @@ std::set<std::pair<int, int>>           g_processed;
 const podio::Frame*                g_current_sdst_frame = nullptr;
 long                               g_n_seen = 0;
 long                               g_n_written = 0;
+bool                               g_callback_failed = false;
+std::string                        g_callback_failure;
 
 // Configure SKELANA IFL* flags. These activate the standard DELPHI
 // analysis processors and are copied verbatim from
@@ -109,69 +117,120 @@ void setSkelanaFlags(BtagMode btag, BtagPrimaryVertex btag_pv) {
   sk::IFLRV0 = 1;
 }
 
-}  // namespace
+void recordCallbackFailure(const char* phase, const char* message) noexcept {
+  const bool first_failure = !g_callback_failed;
+  g_callback_failed = true;
+  g_current_sdst_frame = nullptr;
 
-void on_user00() {
-  // Suppress FPE during SKELANA's borderline-track work — without this,
-  // transient FPEs in PSHSCT/PSHBANKS would change IREJ outcomes.
-  ph::PHSET("FPE", 0);
-  sk::PSINI();
-  setSkelanaFlags(g_cfg.btag, g_cfg.btag_pv);
-
-  if (g_cfg.output.empty()) {
-    std::cerr << "harness::on_user00: output path not set\n";
-    std::exit(2);
-  }
-  g_writer = std::make_unique<podio::ROOTWriter>(g_cfg.output.string());
-  std::cout << "delphi_edm4hep::harness: opened " << g_cfg.output << "\n";
-
-  // Assemble the list of intermediate(s): the primary input_edm4hep
-  // plus any extras to union with it.
-  std::vector<std::filesystem::path> inters;
-  if (!g_cfg.input_edm4hep.empty()) inters.push_back(g_cfg.input_edm4hep);
-  for (const auto& p : g_cfg.input_edm4hep_extra) inters.push_back(p);
-
-  if (!inters.empty()) {
-    g_sdst_readers.reserve(inters.size());
-    for (unsigned r = 0; r < inters.size(); ++r) {
-      auto reader = std::make_unique<podio::ROOTReader>();
-      reader->openFile(inters[r].string());
-
-      // Build (run, evt) -> (reader, entry-idx) index by scanning all
-      // frames. Reads Frame parameters only (collection deserialization
-      // is lazy in podio, so this is cheap). First occurrence wins on
-      // the (rare) duplicate key (begin-of-run records share evt across
-      // tapes); emplace keeps the earliest reader.
-      const unsigned N = reader->getEntries("events");
-      unsigned added = 0;
-      for (unsigned i = 0; i < N; ++i) {
-        auto fd = reader->readEntry("events", i);
-        if (!fd) break;
-        const podio::Frame f(std::move(fd));
-        const auto run = f.getParameter<int>("sDST_EVT_runNumber");
-        const auto evt = f.getParameter<int>("sDST_EVT_eventNumber");
-        if (run && evt) {
-          if (g_sdst_index.emplace(std::make_pair(*run, *evt),
-                                   std::make_pair(r, i)).second) {
-            ++added;
-          }
-        }
+  // Keep the first failure as the authoritative process diagnostic. A later
+  // writer-finalization failure is useful to log, but must not hide the event
+  // failure that made the output partial in the first place.
+  if (first_failure) {
+    try {
+      g_callback_failure = phase ? phase : "callback";
+      if (message && *message) {
+        g_callback_failure += ": ";
+        g_callback_failure += message;
       }
-      std::cout << "delphi_edm4hep::harness: intermediate " << inters[r]
-                << " indexed (" << added << " new keys / " << N
-                << " entries)\n";
-      g_sdst_readers.push_back(std::move(reader));
+    } catch (...) {
+      // The failure flag remains authoritative if retaining text allocates.
     }
-    std::cout << "delphi_edm4hep::harness: " << g_sdst_readers.size()
-              << " intermediate(s), " << g_sdst_index.size()
-              << " unique (run, evt) keys total\n";
   }
 
-  if (g_cfg.on_init) g_cfg.on_init();
+  // C stdio does not throw C++ exceptions. In particular, do not let an
+  // iostream exception turn this noexcept containment path into terminate().
+  std::fprintf(stderr,
+               "delphi_edm4hep::harness: caught C++ %s failure%s%s\n",
+               phase ? phase : "callback", message && *message ? ": " : "",
+               message && *message ? message : "");
 }
 
-void on_user01(int* need) {
+template <typename Callback>
+void guardCallback(const char* phase, Callback&& callback) noexcept {
+  try {
+    std::forward<Callback>(callback)();
+  } catch (const std::exception& error) {
+    recordCallbackFailure(phase, error.what());
+  } catch (...) {
+    recordCallbackFailure(phase, nullptr);
+  }
+}
+
+void finishWriterNoexcept(const char* phase) noexcept {
+  if (!g_writer) return;
+  guardCallback(phase, [] { g_writer->finish(); });
+  g_writer.reset();
+}
+
+}  // namespace
+
+void on_user00() noexcept {
+  guardCallback("user00 initialization", [] {
+    // Suppress FPE during SKELANA's borderline-track work — without this,
+    // transient FPEs in PSHSCT/PSHBANKS would change IREJ outcomes.
+    ph::PHSET("FPE", 0);
+    sk::PSINI();
+    setSkelanaFlags(g_cfg.btag, g_cfg.btag_pv);
+
+    if (g_cfg.output.empty()) {
+      std::cerr << "harness::on_user00: output path not set\n";
+      std::exit(2);
+    }
+    g_writer = std::make_unique<podio::ROOTWriter>(g_cfg.output.string());
+    std::cout << "delphi_edm4hep::harness: opened " << g_cfg.output << "\n";
+
+    // Assemble the list of intermediate(s): the primary input_edm4hep
+    // plus any extras to union with it.
+    std::vector<std::filesystem::path> inters;
+    if (!g_cfg.input_edm4hep.empty()) inters.push_back(g_cfg.input_edm4hep);
+    for (const auto& p : g_cfg.input_edm4hep_extra) inters.push_back(p);
+
+    if (!inters.empty()) {
+      g_sdst_readers.reserve(inters.size());
+      for (unsigned r = 0; r < inters.size(); ++r) {
+        auto reader = std::make_unique<podio::ROOTReader>();
+        reader->openFile(inters[r].string());
+
+        // Build (run, evt) -> (reader, entry-idx) index by scanning all
+        // frames. Reads Frame parameters only (collection deserialization
+        // is lazy in podio, so this is cheap). First occurrence wins on
+        // the (rare) duplicate key (begin-of-run records share evt across
+        // tapes); emplace keeps the earliest reader.
+        const unsigned N = reader->getEntries("events");
+        unsigned added = 0;
+        for (unsigned i = 0; i < N; ++i) {
+          auto fd = reader->readEntry("events", i);
+          if (!fd) break;
+          const podio::Frame f(std::move(fd));
+          const auto run = f.getParameter<int>("sDST_EVT_runNumber");
+          const auto evt = f.getParameter<int>("sDST_EVT_eventNumber");
+          if (run && evt) {
+            if (g_sdst_index.emplace(std::make_pair(*run, *evt),
+                                     std::make_pair(r, i)).second) {
+              ++added;
+            }
+          }
+        }
+        std::cout << "delphi_edm4hep::harness: intermediate " << inters[r]
+                  << " indexed (" << added << " new keys / " << N
+                  << " entries)\n";
+        g_sdst_readers.push_back(std::move(reader));
+      }
+      std::cout << "delphi_edm4hep::harness: " << g_sdst_readers.size()
+                << " intermediate(s), " << g_sdst_index.size()
+                << " unique (run, evt) keys total\n";
+    }
+
+    if (g_cfg.on_init) g_cfg.on_init();
+  });
+}
+
+void on_user01(int* need) noexcept {
   if (!need) return;
+  if (g_callback_failed) {
+    *need = -3;  // stop after a caught C++ callback failure
+    return;
+  }
   if (g_cfg.max_events > 0 && g_n_written >= g_cfg.max_events) {
     *need = -3;   // stop the loop
     return;
@@ -179,7 +238,7 @@ void on_user01(int* need) {
   *need = 1;
 }
 
-void on_user02() {
+static void on_user02_impl() {
   ++g_n_seen;
   if (g_cfg.max_events > 0 && g_n_written >= g_cfg.max_events) return;
 
@@ -253,14 +312,30 @@ void on_user02() {
   }
 }
 
-void on_user99() {
-  if (g_cfg.on_finalize) g_cfg.on_finalize();
-  if (g_writer) {
-    g_writer->finish();
-    g_writer.reset();
+void on_user02() noexcept {
+  if (g_callback_failed) return;
+  guardCallback("user02 event callback", [] { on_user02_impl(); });
+}
+
+void on_user99() noexcept {
+  if (g_cfg.on_finalize) {
+    guardCallback("user99 finalize hook", [] { g_cfg.on_finalize(); });
   }
-  std::cout << "delphi_edm4hep::harness: wrote " << g_n_written
-            << " events to " << g_cfg.output << "\n";
+  finishWriterNoexcept("user99 writer finalization");
+
+  // The canonical success footer is consumed by campaign audits. Never emit
+  // it for a failed/partial job, even though run() will also return nonzero.
+  try {
+    if (g_callback_failed) {
+      std::cerr << "delphi_edm4hep::harness: aborted after " << g_n_written
+                << " written events; partial output is not publishable\n";
+    } else {
+      std::cout << "delphi_edm4hep::harness: wrote " << g_n_written
+                << " events to " << g_cfg.output << "\n";
+    }
+  } catch (...) {
+    // Diagnostics are best effort; the failure state and exit code are not.
+  }
 }
 
 const podio::Frame* currentSdstFrame() { return g_current_sdst_frame; }
@@ -269,6 +344,8 @@ int run(const Config& cfg) {
   g_cfg                  = cfg;
   g_n_seen               = 0;
   g_n_written            = 0;
+  g_callback_failed      = false;
+  g_callback_failure.clear();
   g_current_sdst_frame   = nullptr;
   g_writer.reset();
   g_sdst_readers.clear();
@@ -282,13 +359,68 @@ int run(const Config& cfg) {
     return 1;
   }
 
-  // PHDST reads its input via a TEXT file named PDLINPUT in cwd. Use
-  // an absolute path so PDLINPUT works from any working directory.
-  auto abs_input = std::filesystem::absolute(cfg.input);
-  std::filesystem::remove("PDLINPUT");
+  // PHDST reads its input via a fixed-format text file named PDLINPUT in cwd.
+  // Long absolute paths are silently truncated by the legacy parser (and can
+  // turn a valid input into a zero-event job), so put a short, process-unique
+  // symlink in cwd and write only that relative name to PDLINPUT.
+  std::error_code path_error;
+  const auto abs_input = std::filesystem::absolute(cfg.input, path_error);
+  if (path_error) {
+    std::cerr << "harness::run: cannot resolve input path " << cfg.input
+              << ": " << path_error.message() << "\n";
+    return 1;
+  }
+  const auto input_link = std::filesystem::path(
+      ".phdst_input_" + std::to_string(static_cast<long long>(::getpid())));
+  if (std::filesystem::exists(input_link, path_error) || path_error) {
+    std::cerr << "harness::run: short input link already exists or cannot be "
+                 "inspected: "
+              << input_link;
+    if (path_error) std::cerr << ": " << path_error.message();
+    std::cerr << "\n";
+    return 1;
+  }
+  std::filesystem::create_symlink(abs_input, input_link, path_error);
+  if (path_error) {
+    std::cerr << "harness::run: cannot create short input link " << input_link
+              << " -> " << abs_input << ": " << path_error.message() << "\n";
+    return 1;
+  }
+
+  struct InputFileCleanup {
+    std::filesystem::path link;
+    bool remove_pdl_input = false;
+    ~InputFileCleanup() {
+      std::error_code ignored;
+      if (remove_pdl_input) std::filesystem::remove("PDLINPUT", ignored);
+      std::filesystem::remove(link, ignored);
+    }
+  } cleanup{input_link};
+
+  const auto pdl_status = std::filesystem::symlink_status("PDLINPUT", path_error);
+  if (path_error == std::errc::no_such_file_or_directory) {
+    path_error.clear();
+  } else if (path_error) {
+    std::cerr << "harness::run: cannot inspect PDLINPUT: "
+              << path_error.message() << "\n";
+    return 1;
+  } else if (pdl_status.type() != std::filesystem::file_type::not_found) {
+    std::cerr << "harness::run: refusing to replace existing PDLINPUT\n";
+    return 1;
+  }
   {
     std::ofstream pdl("PDLINPUT");
-    pdl << "FILE = " << abs_input.string() << "\n";
+    if (!pdl) {
+      std::cerr << "harness::run: cannot create PDLINPUT in "
+                << std::filesystem::current_path() << "\n";
+      return 1;
+    }
+    cleanup.remove_pdl_input = true;
+    pdl << "FILE = " << input_link.string() << "\n";
+    if (!pdl) {
+      std::cerr << "harness::run: cannot write PDLINPUT\n";
+      return 1;
+    }
   }
 
   // Drive the PHDST event loop. Empty option string -> default mode.
@@ -297,6 +429,23 @@ int run(const Config& cfg) {
   int n = 0, m = 0;
   const char opt[] = " ";
   ph::phdst_(const_cast<char*>(opt), &n, &m, std::strlen(opt));
+
+  // PHDST can report an input/open error yet return normally after producing a
+  // nonempty metadata-only ROOT file. Make a zero-event conversion fail at the
+  // process boundary so batch drivers cannot publish it as a valid product.
+  finishWriterNoexcept("post-PHDST writer finalization");
+  if (g_callback_failed) {
+    std::cerr << "harness::run: event callback failed";
+    if (!g_callback_failure.empty()) {
+      std::cerr << ": " << g_callback_failure;
+    }
+    std::cerr << "\n";
+    return 3;
+  }
+  if (g_n_written <= 0) {
+    std::cerr << "harness::run: no events were written; conversion failed\n";
+    return 2;
+  }
   return 0;
 }
 

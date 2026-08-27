@@ -35,10 +35,10 @@ namespace dom     = delphi_edm4hep;
 // stubs and a double-archive-definition would error at link time.
 // We forward into the harness which dispatches to the configured hooks.
 extern "C" {
-  void user00_()           { harness::on_user00();        }
-  void user01_(int* need)  { harness::on_user01(need);    }
-  void user02_()           { harness::on_user02();        }
-  void user99_()           { harness::on_user99();        }
+  void user00_() noexcept          { harness::on_user00();        }
+  void user01_(int* need) noexcept { harness::on_user01(need);    }
+  void user02_() noexcept          { harness::on_user02();        }
+  void user99_() noexcept          { harness::on_user99();        }
 }
 
 static void usage(const char* argv0) {
