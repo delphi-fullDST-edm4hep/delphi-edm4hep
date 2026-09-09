@@ -16,6 +16,7 @@
 #include "delphi_edm4hep/CollectionWriter.h"
 
 #include <string_view>
+#include <unordered_map>
 
 namespace delphi_edm4hep::btag {
 
@@ -31,6 +32,15 @@ private:
   // the recalculated one land there, one after the other, so the caller
   // controls which is being read.
   void emitEventLevel(std::string_view bank, Provenance prov, bool valid);
+
+  // Run DELPHI's combined tag (AACMBT / AACMZ0, DELPHI 97-094) on the commons
+  // AABTGS left behind and emit, under AABTAG_*: the secondary-vertex
+  // hypotheses of AAFSEC, AABTAG's jets with their per-jet tag variables,
+  // and the event-level combined tag. `lpa_to_pa` resolves AABTAG's track
+  // addresses to particles. Emits empty collections / NaN when `valid` is
+  // false, without calling into AABTAG.
+  void emitCombinedTag(bool valid,
+                       const std::unordered_map<int, int>& lpa_to_pa);
 };
 
 }  // namespace delphi_edm4hep::btag
