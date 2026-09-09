@@ -28,11 +28,20 @@ import sys
 
 # Filenames per year, transcribed from PSRUNQ's FILNAM table (skelana.car).
 RUNQUALI = {
-    90: "RUNQUALI.SUMARY90", 91: "RUNQUALI.SUMARY91", 92: "RUNQUALI.SUMARY92",
-    93: "RUNQUALI.SUMARY93", 94: "RUNQUALI.SUMARY94", 95: "RUNQUALI.SUMARY95",
-    96: "RUNQUALI.SUMARY96", 97: "RUNQUALI.SUMARY97", 98: "RUNQUALI.SUMARY98",
-    99: "RUNQUALI.SUMARY99", 0: "RUNQUALI.SUMARY00",
+    "90": "RUNQUALI.SUMARY90", "91": "RUNQUALI.SUMARY91",
+    "92": "RUNQUALI.SUMARY92", "93": "RUNQUALI.SUMARY93",
+    "94": "RUNQUALI.SUMARY94", "95": "RUNQUALI.SUMARY95",
+    # The LEP1.5 run at the end of 1995, 130-136 GeV: its own file in FILNAM,
+    # covering runs 63905-64733, disjoint from SUMARY95. No luminosity file
+    # here covers it.
+    "95P3": "RUNQUALI.SUMARY95P3",
+    "96": "RUNQUALI.SUMARY96", "97": "RUNQUALI.SUMARY97",
+    "98": "RUNQUALI.SUMARY98", "99": "RUNQUALI.SUMARY99",
+    "00": "RUNQUALI.SUMARY00",
 }
+
+# SUMAR93C and SUMAR95B also sit in the data directory but are superseded
+# alternates, absent from FILNAM, and so not read by SKELANA either.
 
 # Luminosity came from the SAT through 1993 and the STIC from 1994. A year can
 # offer several sets: LEP2 split by energy point (_130, _183 GeV) and running
@@ -40,15 +49,15 @@ RUNQUALI = {
 # different physics programmes and must not be summed together, so where there
 # is more than one the caller picks with --era. 1990 and 1991 have none.
 LUMI = {
-    92: ("SATLUM92",),
-    93: ("SATLUM93", "LUMI93", "LUMI93FV", "LUMI93RV", "LUMI93_SJAN96"),
-    94: ("STILUM94",),
-    95: ("STILUM95",),
-    96: ("STILUM96", "STILUM96_P1", "STILUM96_P2", "STILUM96_Z0"),
-    97: ("STILUM97_130", "STILUM97_183", "STILUM97_P1", "STILUM97_Z0"),
-    98: ("STILUM98", "STILUM98_Z0"),
-    99: ("STILUM99",),
-    0:  ("STILUM00",),
+    "92": ("SATLUM92",),
+    "93": ("SATLUM93", "LUMI93", "LUMI93FV", "LUMI93RV", "LUMI93_SJAN96"),
+    "94": ("STILUM94",),
+    "95": ("STILUM95",),
+    "96": ("STILUM96", "STILUM96_P1", "STILUM96_P2", "STILUM96_Z0"),
+    "97": ("STILUM97_130", "STILUM97_183", "STILUM97_P1", "STILUM97_Z0"),
+    "98": ("STILUM98", "STILUM98_Z0"),
+    "99": ("STILUM99",),
+    "00": ("STILUM00",),
 }
 
 # Detector names and order are DETNAM from skelana.car. The 1994 files fill
@@ -86,6 +95,11 @@ FILES = ("A B C D E F G H I J K L M N O P Q R S T U "
          "V W X Y Z AAABACADAEAFAGAHAIAJAKALAMANAOAP"
          "AQARASATAUAVAWAXAYAZBABCBDBEBFBGBHBIBJBKBL")
 
+def named(year):
+    """The year label as a reader expects it: 94 -> 1994, 00 -> 2000."""
+    return f"19{year}" if year[:2] != "00" else "2000"
+
+
 MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP",
           "OCT", "NOV", "DEC")
 
@@ -120,19 +134,56 @@ def _stamp(path):
             MONTHS.index(tail[2:5]) + 1, int(tail[:2]))
 
 
-def load(year, dat=None):
-    """(run, fileSeq) -> per-detector quality flags, as a string of digits."""
+def rows(year, dat=None):
+    """Every row of a year's file, in the order PSRUNQ reads them.
+
+    Rows come in three formats. PSRUNQ picks between them using the fill number
+    that heads each block of runs:
+
+        fill > 5450     run is 6 digits, file a 2-digit number
+        run  > 72000    run is 5 digits, file a 2-digit number
+        otherwise       run is 5 digits, file a 2-letter segment code
+
+    Runs above 72000 carry seven further detectors, in columns 45-51.
+
+    File order matters and is not sorted order: SKELANA closes a range of
+    accepted runs on the row before a rejection, and in the 1994 file run
+    45006 follows run 45219.
+    """
     path = os.path.join(_dat(dat), RUNQUALI[year])
-    table = {}
+    fill = 0
     for line in open(path, errors="replace"):
         line = line.rstrip("\n").ljust(60)
-        if not line[:5].strip().isdigit():
+
+        # Each block of runs is headed by its fill, and the fill picks the format.
+        if line[1:5] == "FILL":
+            if line[5:9].strip().isdigit():
+                fill = int(line[5:9])
             continue
+
+        wide = fill > 5450                   # LEP2 numbered its runs in six digits
+        head = line[:6] if wide else line[:5]
+        if not head.strip().isdigit():
+            continue                         # legend, banner or blank line
+        run = int(head)
+
+        code = line[6:8] if wide else line[5:7]
+        if wide or run > 72000:
+            seq = int(code) if code.strip().isdigit() else 1   # already a number
+        else:
+            seq = _fileseq(code)             # segment letter: 'A' -> 1, 'AA' -> 27
+
         flags = "".join(line[a:b] for a, b in COLUMNS)
+        if run > 72000:
+            flags += line[44:51]             # VFT, MUS, TOF and the taggers
         if not flags[:31].isdigit():
-            continue
-        table[(int(line[:5]), _fileseq(line[5:7]))] = flags
-    return table
+            continue                         # not a data row after all
+        yield run, seq, flags
+
+
+def load(year, dat=None):
+    """(run, fileSeq) -> per-detector quality flags, as a string of digits."""
+    return {(run, seq): flags for run, seq, flags in rows(year, dat)}
 
 
 def luminosity(year, dat=None, era=None, version=None):
@@ -147,9 +198,9 @@ def luminosity(year, dat=None, era=None, version=None):
     if era:
         sets = tuple(s for s in sets if s == era)
         if not sets:
-            sys.exit(f"unknown era for 19{year:02d}: {', '.join(LUMI[year])}")
+            sys.exit(f"unknown era for {named(year)}: {', '.join(LUMI[year])}")
     if len(sets) > 1:
-        sys.exit(f"19{year:02d} covers several energy points or periods, which"
+        sys.exit(f"{named(year)} covers several energy points or periods, which"
                  f" must not be summed together.\nPick one with --era: "
                  f"{', '.join(LUMI[year])}")
     # The version separator is '.', the family separator '_', so this matches
@@ -221,7 +272,11 @@ def select(table, want, strict=False):
     for key, flags in table.items():
         ok = True
         for name, level in want.items():
-            flag = flags[DETECTORS.index(name)]
+            index = DETECTORS.index(name)
+            # Files before 1999 carry only the first 31 detectors. PSRUNQ
+            # leaves the rest at the zero PSINI set, so they fail any
+            # requirement above 0 rather than being absent.
+            flag = flags[index] if index < len(flags) else "0"
             value = int(flag) if flag.isdigit() else 9
             if value < level or (strict and value > 7):
                 rejected[name] += 1
@@ -233,8 +288,8 @@ def select(table, want, strict=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--year", type=int, required=True,
-                        help="two-digit year, e.g. 94; 2000 is 0")
+    parser.add_argument("--year", required=True,
+                        help="two-digit year, e.g. 94, 00; also 95P3 (LEP1.5)")
     parser.add_argument("--dat", help="override $DELPHI_DAT")
     parser.add_argument("--require", nargs="*", metavar="DET=FLAG",
                         help="minimum quality, e.g. TPC=7 OD=6 MUB=5")
@@ -251,11 +306,14 @@ def main():
     parser.add_argument("--out", help="write the selection as JSON")
     args = parser.parse_args()
 
+    args.year = args.year.upper()
     if args.year not in RUNQUALI:
-        sys.exit(f"no run-quality file for 19{args.year:02d}")
+        sys.exit(f"no run-quality file for {args.year!r};"
+                 f" have {', '.join(RUNQUALI)}")
     table = load(args.year, args.dat)
     reach = achievable(table)
-    print(f"19{args.year:02d}: {len(table)} (run, fileSeq) entries")
+    print(f"{named(args.year)}: {len(table)} (run, fileSeq) entries",
+          flush=True)
 
     if args.flags:
         print(f'\n{"detector":9s} {"max":>4} {">=5":>8} {">=6":>8} {">=7":>8}'
@@ -276,7 +334,7 @@ def main():
     for name, level in sorted(want.items()):
         best = reach.get(name, {}).get("max")
         if best is not None and best < level:
-            print(f"warning: {name} never exceeds {best} in 19{args.year:02d},"
+            print(f"warning: {name} never exceeds {best} in {named(args.year)},"
                   f" so {name}>={level} can never be satisfied", file=sys.stderr)
 
     good, rejected = select(table, want, args.strict)

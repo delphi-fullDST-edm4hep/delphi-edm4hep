@@ -50,6 +50,15 @@ Three traps are visible there, all from 1994:
 A threshold that can never be met is reported rather than silently returning
 an empty selection.
 
+The same thresholds do not travel between years. In 2000 one TPC sector failed:
+
+    TPC_0    99.5% at >=7
+    TPC_1     7.6% at >=7,  76.3% at >=6
+
+so `--preset iflrnq`, which demands TPC >= 7, keeps 7.6% of the year, while
+`TPC=6` keeps 76.3% and 163.88 of 224.23 pb-1. In 2000 the VFT and TOF columns
+are flag 9 (unknown) in every row, so any requirement on them selects nothing.
+
 ## Usage
 
     $ runquality.py --year 94 --require VD=1 ID=6 TPC=7 OD=6 MUB=5
@@ -97,6 +106,30 @@ quality but no luminosity, and 22 have luminosity but no quality. Selected keys
 with no luminosity record are counted and reported rather than dropped
 silently.
 
+## Checked against SKELANA
+
+`runquality.py` reimplements in Python what PSRUNQ does in Fortran, so it is
+checked against it. `psrunq_probe.cpp` sets an acceptance window, calls PSRUNQ
+and dumps the runs it accepts; `crosscheck.py` expands those and requires an
+exact match.
+
+    $ ./crosscheck.py
+    reference psrunq_iflrnq.txt: 209 ranges, window MVX_A>=1 MVX_C>=1 TPC_0>=7 TPC_1>=7
+    rows 44545   SKELANA accepts 36424   runquality.py accepts 36424
+    exact match
+
+`psrunq_iflrnq.txt` holds SKELANA's own window. The rows span 1990 to 2000, so
+all three row formats and the segment-code table are covered. Other windows are
+worth checking whenever the selection changes -- in particular a requirement on
+detectors 32-38, which takes a different path because the earlier files do not
+carry them -- and the probe generates them:
+
+    psrunq_probe TAG_40=7 > other.txt && ./crosscheck.py other.txt
+
+The RUNQUALI files are fixed historical data, so a reference needs regenerating
+only if its window changes; building the probe is described at the top of
+`psrunq_probe.cpp`.
+
 ## Data files
 
 Read from `$DELPHI_DAT` (`source /cvmfs/delphi.cern.ch/setup.sh`), or `--dat`.
@@ -140,5 +173,14 @@ running as `STILUM96_P1`, and `STILUM97_P1` the same 183 GeV running as
 data, not additional running, and must not be added to it.
 
 Parsing follows PSRUNQ (`skelana.car`): its fixed columns and its file-code
-table. A whitespace parse mis-reads the two-letter segment codes, which carry
-no separator -- run 51016 segment AA begins `51016AA0`.
+table. Rows come in three formats, picked by the fill number heading each block
+of runs:
+
+    fill > 5450     run is 6 digits, file a 2-digit number
+    run  > 72000    run is 5 digits, file a 2-digit number
+    otherwise       run is 5 digits, file a 2-letter segment code
+
+Runs above 72000 carry seven further detectors, in columns 45-51.
+
+The segment code carries no separator, so a whitespace parse mis-reads it: run
+51016 segment AA begins `51016AA0`.
