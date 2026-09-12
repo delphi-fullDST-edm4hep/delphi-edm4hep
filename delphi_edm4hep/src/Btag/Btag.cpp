@@ -3,7 +3,9 @@
 // Reads PSCBTG (event/hemisphere probabilities) and, when AABTAG was
 // actually rerun, the AAMAIN / AAMNVX commons (per-track impact
 // parameters, per-track probabilities, VD quality, and AABTAG's own
-// primary vertex).
+// primary vertex), the AAJETS / AASCND / AAJESV commons (AABTAG's jets and
+// the secondary vertices its AAFSEC search found), and -- after calling the
+// combined tag of DELPHI 97-094 (AACMBT, AACMZ0) -- AACTVR / AACTRS.
 
 #include "delphi_edm4hep/Btag/Btag.h"
 
@@ -18,11 +20,14 @@
 
 #include <edm4hep/MutableParticleID.h>
 #include <edm4hep/ParticleIDCollection.h>
+#include <edm4hep/MutableReconstructedParticle.h>
 #include <edm4hep/MutableVertex.h>
+#include <edm4hep/ReconstructedParticleCollection.h>
 #include <edm4hep/VertexCollection.h>
 #include <podio/UserDataCollection.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -48,6 +53,12 @@ constexpr int kAlgoBtagPV = 3;
 
 // algorithmType for the per-track b-tag row.
 constexpr int kAlgoBtagTag = 4;
+
+// algorithmType for AABTAG's secondary-vertex hypotheses (AAFSEC).
+constexpr int kAlgoBtagSV = 5;
+
+// algorithmType for the per-jet combined-tag row (AACMBT).
+constexpr int kAlgoBtagJet = 6;
 
 // Map the "not computed" sentinel to NaN so a consumer that forgets to check
 // cannot silently average it in.
@@ -207,6 +218,18 @@ void BtagWriter::emit()
     tag.addToParameters(static_cast<float>(aa::NLAYZ(i)));
     tag.addToParameters(static_cast<float>(aa::ISRT(i)));        // 0 = unused
     tag.addToParameters(static_cast<float>(attached ? 1 : 0));
+    // [11..19] jet / hemisphere / sign bookkeeping from AAJETS, AASCND, AAJESV
+    // and the AAMAIN status word. Appended after the original 11 so existing
+    // readers keep their indices.
+    tag.addToParameters(static_cast<float>(aa::IJET(i)));        // AABTAG jet (1..NJET)
+    tag.addToParameters(static_cast<float>(aa::ITHR(i)));        // thrust hemisphere (1/2)
+    tag.addToParameters(aa::PHIV(i));                            // IP sign (+1/-1; -1 also for unused)
+    tag.addToParameters(aa::RPDT(i));                            // rapidity w.r.t. its jet
+    tag.addToParameters(static_cast<float>(aa::DISTJ(i) * kCm2Mm)); // 3-D track-jet distance (mm)
+    tag.addToParameters(static_cast<float>(aa::ERRTJ(i) * kCm2Mm)); // its error (mm)
+    tag.addToParameters(static_cast<float>(aa::INSV(i)));        // SV hypothesis using it (+100 flags)
+    tag.addToParameters(static_cast<float>(aa::IST(i)));         // 99 rejected, 200/300/400 K0/Lambda/gamma daughter
+    tag.addToParameters(static_cast<float>(aa::IJSV(i)));        // jet after SV redefinition
 
     if (auto it = lpa_to_pa.find(aa::IADTR(i)); it != lpa_to_pa.end()) {
       if (const auto particle = particleForPa(it->second)) {
@@ -220,6 +243,186 @@ void BtagWriter::emit()
 
   put(std::move(tags), bank, "TrackTag", prov);
   put(std::move(btagPv), bank, "PrimaryVertex", prov);
+
+  emitCombinedTag(tagValid, lpa_to_pa);
+}
+
+// ---------------------------------------------------------------------------
+// Secondary vertices, jets and the combined tag.
+//
+// AABTGS (called by PSFBTG) already ran AAFSEC, DELPHI's secondary-vertex
+// search, and AASIGN used it to re-sign the impact parameters; the vertices
+// themselves stay in the AASCND common and are never written to a bank. The
+// combined tag (DELPHI 97-094) is a separate entry point, AACMBT, that PSFBTG
+// never calls; it consumes those commons and fills AACTVR / AACTRS per jet,
+// and AACMZ0 turns the per-jet values into the event tag. This is the same
+// sequence BSAURUS's PXBTAG('RUN') uses.
+//
+// Output (all Derived, bank AABTAG):
+//   SecondaryVertices  one Vertex per AAFSEC hypothesis, accepted or not
+//                      (parameters[0] = ITSEC says which); position mm,
+//                      covariance mm^2, chi2 = CHI2SV (2 d.o.f., see the
+//                      AASCND comment), particles = the fitted tracks.
+//   Jets               AABTAG's own jets as ReconstructedParticles, in jet
+//                      order, particles = the tracks it assigned.
+//   JetTag             one ParticleID per jet: type = category JTAG,
+//                      likelihood = X_jet, parameters as documented below.
+//   CombinedTagEvent   X_ev (AACMZ0); CombinedTagHemisphere the largest
+//                      X_jet per thrust hemisphere (BSAURUS's BTAG(29,30)).
+void BtagWriter::emitCombinedTag(bool valid,
+                                 const std::unordered_map<int, int>& lpa_to_pa)
+{
+  const std::string_view bank = "AABTAG";
+  const Provenance prov = Provenance::Derived;
+
+  // AABTAG track index (1..NTRK) -> its particle, or empty.
+  const auto particleForTrack =
+    [&](int i) -> std::optional<edm4hep::ReconstructedParticle> {
+      if (i < 1 || i > aa::kMaxTracks) return std::nullopt;
+      const auto it = lpa_to_pa.find(aa::IADTR(i));
+      if (it == lpa_to_pa.end()) return std::nullopt;
+      return particleForPa(it->second);
+    };
+
+  // AACMSV bails out on IBAD != 0 but AACMNS does not, and on the beam-spot
+  // bypass every common is stale; so call into AABTAG only on a valid event.
+  int njet = 0, nhypo = 0, ntrk = 0;
+  if (valid) {
+    // On MC, AALINT (lepton-ID tuning inside AACMBT) consumes RNDM numbers
+    // that the next event's impact-parameter smearing would otherwise have
+    // used; restore the seed so the lifetime tag stays bit-identical to the
+    // unmodified converter. See the note on rdmout_/rdmin_ in AabtagCommons.h.
+    std::uint32_t seed = 0;
+    aa::rdmout_(&seed);
+    aa::aacmbt_();
+    aa::aacmz0_();
+    aa::rdmin_(&seed);
+    njet  = std::clamp(aa::NJET(),  0, aa::kMaxJets);
+    nhypo = std::clamp(aa::NHYPO(), 0, aa::kMaxHypo);
+    ntrk  = std::clamp(aa::NTRK(),  0, aa::kMaxTracks);
+  }
+
+  // ---- secondary-vertex hypotheses (AASCND) ------------------------------
+  // parameters: [0] ITSEC  [1] NSEC  [2] NSVRT  [3] NRAP  [4] JETSV
+  //   [5] IF3DSV  [6] PRBSEC  [7] CHI2SV  [8] CSEC
+  //   [9..12] PSEC px py pz E (GeV)   [13..16] PRAP px py pz E (GeV)
+  //   [17,18] TPHSEC theta, phi of the PV->SV direction (rad)
+  //   [19..21] VTPHS its covariance   [22..26] DCASEC d_rphi d_z (mm),
+  //   var_rphi cov var_z (mm^2)
+  //   [27 .. 27+NSEC-1]  ISEC, signed AABTAG track indices (see AASCND)
+  //   [27+NSEC .. +NRAP-1]  IRAP, AABTAG track indices of the rapidity tracks
+  edm4hep::VertexCollection svCol;
+  int nAccepted = 0;
+  for (int h = 1; h <= nhypo; ++h) {
+    auto sv = svCol.create();
+    sv.setPrimary(false);
+    sv.setAlgorithmType(kAlgoBtagSV);
+    sv.setPosition({static_cast<float>(aa::VSEC(1, h) * kCm2Mm),
+                    static_cast<float>(aa::VSEC(2, h) * kCm2Mm),
+                    static_cast<float>(aa::VSEC(3, h) * kCm2Mm)});
+    sv.setCovMatrix({aa::SSEC(1, h) * kCm2Mm2_f, aa::SSEC(2, h) * kCm2Mm2_f,
+                     aa::SSEC(3, h) * kCm2Mm2_f, aa::SSEC(4, h) * kCm2Mm2_f,
+                     aa::SSEC(5, h) * kCm2Mm2_f, aa::SSEC(6, h) * kCm2Mm2_f});
+    sv.setChi2(aa::CHI2SV(h));
+    sv.setNdf(2);
+    const int itsec = aa::ITSEC(h);
+    if (itsec >= 0) ++nAccepted;
+    const int nsec = std::clamp(aa::NSEC(h), 0, aa::kMaxSvTracks);
+    const int nrap = std::clamp(aa::NRAP(h), 0, aa::kMaxSvTracks);
+    sv.addToParameters(static_cast<float>(itsec));
+    sv.addToParameters(static_cast<float>(nsec));
+    sv.addToParameters(static_cast<float>(aa::NSVRT(h)));
+    sv.addToParameters(static_cast<float>(nrap));
+    sv.addToParameters(static_cast<float>(aa::JETSV(h)));
+    sv.addToParameters(static_cast<float>(aa::IF3DSV(h)));
+    sv.addToParameters(aa::PRBSEC(h));
+    sv.addToParameters(aa::CHI2SV(h));
+    sv.addToParameters(aa::CSEC(h));
+    for (int i = 1; i <= 4; ++i) sv.addToParameters(aa::PSEC(i, h));
+    for (int i = 1; i <= 4; ++i) sv.addToParameters(aa::PRAP(i, h));
+    sv.addToParameters(aa::TPHSEC(1, h));
+    sv.addToParameters(aa::TPHSEC(2, h));
+    for (int i = 1; i <= 3; ++i) sv.addToParameters(aa::VTPHS(i, h));
+    sv.addToParameters(static_cast<float>(aa::DCASEC(1, h) * kCm2Mm));
+    sv.addToParameters(static_cast<float>(aa::DCASEC(2, h) * kCm2Mm));
+    sv.addToParameters(aa::DCASEC(3, h) * kCm2Mm2_f);
+    sv.addToParameters(aa::DCASEC(4, h) * kCm2Mm2_f);
+    sv.addToParameters(aa::DCASEC(5, h) * kCm2Mm2_f);
+    for (int k = 1; k <= nsec; ++k) {
+      const int idx = aa::ISEC(k, h);
+      sv.addToParameters(static_cast<float>(idx));
+      if (const auto p = particleForTrack(std::abs(idx))) sv.addToParticles(*p);
+    }
+    for (int k = 1; k <= nrap; ++k)
+      sv.addToParameters(static_cast<float>(aa::IRAP(k, h)));
+  }
+
+  // ---- jets (AAJETS) and the per-jet combined tag (AACTVR / AACTRS) ------
+  // JetTag parameters: [0] JTAG  [1] XEFFJ  [2] thrust hemisphere (1/2)
+  //   [3..8] TAGV(1..6)  [9..14] RATVQ(1..6)  [15..20] RATVC(1..6)
+  //   [21] RATCQ  [22] RATCC  [23] NTRS  [24] RTTVQ  [25] RTTVC
+  //   [26..29] PJSV px py pz E, the jet direction after the SV redefinition
+  //   [30 .. 30+4*NTRS-1]  per rapidity track: INVTS (AABTAG track index),
+  //   TGVT (rapidity), RTTVQI, RTTVCI
+  edm4hep::ReconstructedParticleCollection jetCol;
+  edm4hep::ParticleIDCollection jetTags;
+  // Largest X_jet per thrust hemisphere over the tagged jets, as PXBTAG
+  // does for BTAG(29,30); NaN when the hemisphere has no tagged jet.
+  float hemiBest[2] = {kNaN, kNaN};
+  for (int j = 1; j <= njet; ++j) {
+    // Collection position + 1 is the AABTAG jet number; JetTag rows follow
+    // the same order.
+    auto jet = jetCol.create();
+    jet.setMomentum({aa::PJET(1, j), aa::PJET(2, j), aa::PJET(3, j)});
+    jet.setEnergy(aa::PJET(4, j));
+    for (int i = 1; i <= ntrk; ++i) {
+      if (aa::IJET(i) != j) continue;
+      if (const auto p = particleForTrack(i)) jet.addToParticles(*p);
+    }
+    const float cosjt = aa::PJET(1, j) * aa::PTHR(1) + aa::PJET(2, j) * aa::PTHR(2)
+                      + aa::PJET(3, j) * aa::PTHR(3);
+    const int hemi = cosjt >= 0.f ? 1 : 2;
+    const int   jtag  = aa::JTAG(j);
+    const float xeffj = aa::XEFFJ(j);
+    if (jtag > 0 && (std::isnan(hemiBest[hemi - 1]) || xeffj > hemiBest[hemi - 1]))
+      hemiBest[hemi - 1] = xeffj;
+
+    auto tag = jetTags.create();
+    tag.setAlgorithmType(kAlgoBtagJet);
+    tag.setType(jtag);
+    tag.setLikelihood(xeffj);
+    tag.setParticle(jet);
+    tag.addToParameters(static_cast<float>(jtag));
+    tag.addToParameters(xeffj);
+    tag.addToParameters(static_cast<float>(hemi));
+    for (int i = 1; i <= aa::kNTagVars; ++i) tag.addToParameters(aa::TAGV (i, j));
+    for (int i = 1; i <= aa::kNTagVars; ++i) tag.addToParameters(aa::RATVQ(i, j));
+    for (int i = 1; i <= aa::kNTagVars; ++i) tag.addToParameters(aa::RATVC(i, j));
+    tag.addToParameters(aa::RATCQ(j));
+    tag.addToParameters(aa::RATCC(j));
+    const int ntrs = std::clamp(aa::NTRS(j), 0, aa::kMaxRapTracks);
+    tag.addToParameters(static_cast<float>(ntrs));
+    tag.addToParameters(aa::RTTVQ(j));
+    tag.addToParameters(aa::RTTVC(j));
+    for (int i = 1; i <= 4; ++i) tag.addToParameters(aa::PJSV(i, j));
+    for (int k = 1; k <= ntrs; ++k) {
+      tag.addToParameters(static_cast<float>(aa::INVTS(k, j)));
+      tag.addToParameters(aa::TGVT  (k, j));
+      tag.addToParameters(aa::RTTVQI(k, j));
+      tag.addToParameters(aa::RTTVCI(k, j));
+    }
+  }
+
+  putParameter(bank, "CombinedTagEvent",      valid ? aa::XEFFEV() : kNaN, prov);
+  putParameter(bank, "CombinedTagHemisphere", std::vector<float>{hemiBest[0], hemiBest[1]}, prov);
+  putParameter(bank, "Oblateness",            valid ? aa::OBLVAL() : kNaN, prov);
+  putParameter(bank, "NJets",                       njet,      Provenance::Custom);
+  putParameter(bank, "NSecondaryVertexHypotheses",  nhypo,     Provenance::Custom);
+  putParameter(bank, "NSecondaryVertices",          nAccepted, Provenance::Custom);
+
+  put(std::move(svCol),   bank, "SecondaryVertices", prov);
+  put(std::move(jetCol),  bank, "Jets",              prov);
+  put(std::move(jetTags), bank, "JetTag",            prov);
 }
 
 }  // namespace delphi_edm4hep::btag
