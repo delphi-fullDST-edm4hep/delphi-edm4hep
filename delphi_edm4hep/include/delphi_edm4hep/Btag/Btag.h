@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include "delphi_edm4hep/Btag/BtagInfo.h"
 #include "delphi_edm4hep/CollectionWriter.h"
 
 #include <string_view>
@@ -26,11 +27,8 @@ public:
   void emit() override;
 
 private:
-  // Emit the event and hemisphere b-tag probabilities plus the thrust that
-  // are currently in the PSCBTG common, under `bank`. Both the stored tag and
-  // the recalculated one land there, one after the other, so the caller
-  // controls which is being read.
-  void emitEventLevel(std::string_view bank, Provenance prov, bool valid);
+  void emitEventLevel(std::string_view bank, Provenance prov, bool valid,
+                      const EventLevelTag& tag);
 };
 
 }  // namespace delphi_edm4hep::btag

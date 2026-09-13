@@ -1,9 +1,8 @@
 // Provenance registry.
 //
 // Collects the source of every collection emitted during a job and prints a
-// summary at the end. The summary flags collections whose values SKELANA
-// produced but whose name carries a DST bank mnemonic, since that naming
-// implies a transcription.
+// summary at the end. The summary flags derived collections whose name carries
+// a DST bank mnemonic, since that naming implies a transcription.
 
 #include "delphi_edm4hep/CollectionWriter.h"
 

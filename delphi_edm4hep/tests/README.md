@@ -4,6 +4,13 @@ Checks that converting DELPHI data to EDM4hep still gives the same result. Runs
 on a dedicated machine rather than in GitHub Actions, because it reads real
 DELPHI files from EOS.
 
+The CI job needs a registered, online self-hosted runner carrying the
+`delphi-eos` label. It is disabled when that runner is unavailable so ordinary
+CI does not remain queued for 24 hours. A maintainer can either select
+`run_data_test` when manually dispatching the CI workflow, or set the repository
+variable `DELPHI_DATA_CI_ENABLED=true` to run it automatically for pushes and
+trusted, same-repository pull requests.
+
     bash .github/scripts/data-test.sh                  # all samples
     bash .github/scripts/data-test.sh data_94c_short   # one sample
     bash .github/scripts/data-test.sh --bless          # regenerate references

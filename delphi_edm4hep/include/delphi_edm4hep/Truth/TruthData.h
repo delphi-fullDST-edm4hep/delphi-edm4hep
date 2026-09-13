@@ -7,18 +7,21 @@
 
 #include <edm4hep/MutableMCParticle.h>
 
+#include <unordered_map>
 #include <vector>
 
 namespace delphi_edm4hep::truth {
 
 // Output of TruthGenWriter::emit(): per-LU-index MutableMCParticle
-// handles (0-indexed; handles[i] ↔ LU(i+1) in PSCLUJ). Handles remain
+// handles (0-indexed; handles[i] ↔ the direct LU-like row i+1). Handles remain
 // valid after the collection has been moved into the Frame because
 // podio object handles wrap a stable pointer into per-collection
-// storage. Consumed by TruthRecoLinkWriter (uses PSCTBL exact tables
-// to bind each handle to a tracking::Output Particle handle).
+// storage. The raw PA-address map is the direct equivalent of the
+// PSCTBL IPAST -> ISTLU correspondence and is consumed by
+// TruthRecoLinkWriter.
 struct GenParticleResult {
   std::vector<edm4hep::MutableMCParticle> handles;
+  std::unordered_map<int, int> lpa_to_gen;
 };
 
 }  // namespace delphi_edm4hep::truth

@@ -1,4 +1,4 @@
-// ParticleId domain: per-track PID + dE/dx + RICH from SKELANA commons.
+// ParticleId domain: direct per-PA PID, dE/dx, and RICH decoding.
 // ParticleIdWriter (pass-1) reads ctx_.tracking and emits:
 //   <tag>_HAID_dEdx                ParticleIDCollection (algoType=1)
 //   <tag>_HAID_dEdx_RecDqdx        RecDqdxCollection

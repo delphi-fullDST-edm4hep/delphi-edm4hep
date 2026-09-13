@@ -9,7 +9,9 @@
 //   Q(LMTPC+6)   dE/dx integrated 80%
 //   Q(LMTPC+7)   npads + 100*sec_start + 10000*sec_end
 //   Q(LMTPC+8)   nwires + 1000*nhitwires + 1000000*method
-//   Q(LMTPC+10)  saturated + 1000*empty
+//   Q(LMTPC+10)  packed bit field: saturated hits (bits 1..8), empty wires
+//                 (9..16), last wire/sector (17..20), and an internal
+//                 generated-random marker (bit 21)
 //   Q(LMTPC+15)  V0 pad-row pattern (16+4 bits)
 
 #include "delphi_edm4hep/Pid/Mtpc.h"
@@ -56,8 +58,11 @@ void MtpcWriter::emit()
     const int   padpat   = static_cast<int>(std::lround(ph::Q(lmtpc + 15)));
     const int   nPads    = p7  % 100;
     const int   nWires   = p8  % 1000;
-    const int   nSat     = p10 % 1000;
-    const int   nEmpty   = p10 / 1000;
+    // Decode the documented low-byte fields instead of decimal splitting.
+    // GETNORM sets bit 21 in place; masking by construction keeps converter
+    // output independent of whether a legacy calibration ran earlier.
+    const int   nSat     = p10 & 0xff;
+    const int   nEmpty   = (p10 >> 8) & 0xff;
 
     auto pid = pid_col.create();
     pid.setAlgorithmType(kAlgoMtpcExt);

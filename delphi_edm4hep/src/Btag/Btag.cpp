@@ -1,20 +1,17 @@
 // Btag.cpp — b-tagging domain implementation.
 //
-// Reads PSCBTG (event/hemisphere probabilities) and, when AABTAG was
-// actually rerun, the AAMAIN / AAMNVX commons (per-track impact
-// parameters, per-track probabilities, VD quality, and AABTAG's own
-// primary vertex).
+// Reads the stored BTAG result directly from the DST and the recalculated
+// event tag from the converter-owned BtagInfo service. The rich package
+// output still comes from AAMAIN / AAMNVX (per-track impact parameters,
+// probabilities, VD quality, and AABTAG's own primary vertex).
 
 #include "delphi_edm4hep/Btag/Btag.h"
 
+#include "delphi_edm4hep/Btag/BtagInfo.h"
+#include "delphi_edm4hep/Event/EventInfo.h"
 #include "delphi_edm4hep/internal/AabtagCommons.h"
 #include "delphi_edm4hep/internal/AabtagStatus.h"
 #include "delphi_edm4hep/internal/PaWalk.h"
-
-#include "skelana/functions.hpp"
-#include "skelana/pscbsp.hpp"
-#include "skelana/pscbtg.hpp"
-#include "skelana/pscflg.hpp"
 
 #include <edm4hep/MutableParticleID.h>
 #include <edm4hep/ParticleIDCollection.h>
@@ -30,7 +27,6 @@
 #include <unordered_map>
 #include <vector>
 
-namespace sk = skelana;
 namespace aa = delphi_edm4hep::aabtag;
 
 namespace delphi_edm4hep::btag {
@@ -62,44 +58,42 @@ float thrustValue(float v) { return (v < 0.f || v >= 1.999f) ? kNaN : v; }
 
 }  // namespace
 
-// The PSCBTG common is a single output buffer: PSHBTG fills it from the
-// stored BTAG bank and PSFBTG from the recalculation, so whichever ran last
-// is what it holds.
 void BtagWriter::emitEventLevel(std::string_view bank, Provenance prov,
-                               bool valid)
+                               bool valid, const EventLevelTag& tag)
 {
   const auto eventProb = [&](float value) { return valid ? prob(value) : kNaN; };
   // Index order within each triplet is (hemisphere 1, hemisphere 2, whole
   // event), matching QBTPRN/QBTPRP/QBTPRS(1..3).
   putParameter(bank, "ProbNegIP",
-               std::vector<float>{eventProb(sk::QBTPRN(1)),
-                                  eventProb(sk::QBTPRN(2)),
-                                  eventProb(sk::QBTPRN(3))}, prov);
+               std::vector<float>{eventProb(tag.probabilityNegative[0]),
+                                  eventProb(tag.probabilityNegative[1]),
+                                  eventProb(tag.probabilityNegative[2])}, prov);
   putParameter(bank, "ProbPosIP",
-               std::vector<float>{eventProb(sk::QBTPRP(1)),
-                                  eventProb(sk::QBTPRP(2)),
-                                  eventProb(sk::QBTPRP(3))}, prov);
+               std::vector<float>{eventProb(tag.probabilityPositive[0]),
+                                  eventProb(tag.probabilityPositive[1]),
+                                  eventProb(tag.probabilityPositive[2])}, prov);
   putParameter(bank, "ProbAllIP",
-               std::vector<float>{eventProb(sk::QBTPRS(1)),
-                                  eventProb(sk::QBTPRS(2)),
-                                  eventProb(sk::QBTPRS(3))}, prov);
+               std::vector<float>{eventProb(tag.probabilityAll[0]),
+                                  eventProb(tag.probabilityAll[1]),
+                                  eventProb(tag.probabilityAll[2])}, prov);
   // The thrust axis gets the same sentinel treatment: VFILL sets it to 2.0
   // as well, and a direction cosine can never legitimately exceed 1, so an
   // un-mapped 2.0 here would be a sentinel masquerading as data.
   putParameter(bank, "ThrustAxis",
-               std::vector<float>{eventProb(sk::QBTTHR(1)),
-                                  eventProb(sk::QBTTHR(2)),
-                                  eventProb(sk::QBTTHR(3))}, prov);
+               std::vector<float>{eventProb(tag.thrustAxis[0]),
+                                  eventProb(tag.thrustAxis[1]),
+                                  eventProb(tag.thrustAxis[2])}, prov);
   // QBTTHR(4) is the thrust VALUE, not an axis component.
   putParameter(bank, "ThrustValue",
-               valid ? thrustValue(sk::QBTTHR(4)) : kNaN, prov);
+               valid ? thrustValue(tag.thrustValue) : kNaN, prov);
 }
 
 void BtagWriter::emit()
 {
+  const int beamSpotError = event::current().beamSpot.errorCode;
   putParameter("BTAGCFG", "SourcePrefix",
                std::string(fromFullDst() ? "fDST" : "sDST"), Provenance::Custom);
-  putParameter("BTAGCFG", "BeamSpotErrorCode", sk::IERRBS,
+  putParameter("BTAGCFG", "BeamSpotErrorCode", beamSpotError,
                Provenance::Derived);
 
   // AAFLAG is meaningful only when PSFBTG actually called AABTGS. PSFBTG
@@ -107,19 +101,19 @@ void BtagWriter::emit()
   // arrays) stale. Failed AABTAG events can retain derived values too, so gate
   // the entire rich payload on the combined current-event status rather than
   // sanitizing one field at a time.
-  const auto status = aa::eventStatus(sk::IERRBS, aa::IBAD());
+  const auto status = aa::eventStatus(beamSpotError, aa::IBAD());
   const bool tagValid = status.valid;
+  const auto& eventTags = current();
 
-  // Both tags are emitted. PSHORT has already run PSFBTG, so the recalculated
-  // values are the ones currently in PSCBTG; read them before PSHBTG refills
-  // the common from the stored bank. The stored tag needs no validity gate --
-  // an absent bank leaves the 2.0 prefill, which prob() maps to NaN.
-  emitEventLevel("AABTAG", Provenance::Derived, tagValid);
-  sk::PSHBTG();
-  emitEventLevel("BTG", Provenance::Transcribed, /*valid=*/true);
+  // Both tags are emitted from the direct runtime snapshot. The stored tag
+  // needs no validity gate: an absent bank retains the 2.0 sentinel, which
+  // prob() maps to NaN.
+  emitEventLevel("AABTAG", Provenance::Derived, tagValid,
+                 eventTags.recalculated);
+  emitEventLevel("BTG", Provenance::Transcribed, /*valid=*/true,
+                 eventTags.stored);
 
-  // The per-track arrays and AABTAG's vertex come from AAMAIN / AAMNVX, which
-  // PSHBTG does not touch, so they still hold the recalculation.
+  // The per-track arrays and AABTAG's vertex come from AAMAIN / AAMNVX.
   const std::string_view bank = "AABTAG";
   const Provenance prov = Provenance::Derived;
 

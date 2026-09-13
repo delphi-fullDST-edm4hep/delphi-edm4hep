@@ -7,8 +7,8 @@
 //
 // The binary's user00_/01_/02_/99_ Fortran overrides forward into the
 // `on_user00/01/02/99` entry points exposed here. We can't put those
-// overrides in the library itself because libphdstxx.a / libskelanaxx.a
-// ship default-stub implementations and a static-archive double-supply
+// overrides in the library itself because the DELPHI archives ship
+// default-stub implementations and a static-archive double-supply
 // of the same symbol breaks linking.
 //
 
@@ -26,14 +26,24 @@
 
 namespace delphi_edm4hep::harness {
 
-// Per-event hook. Called once per kept event from user02_, AFTER PSBEG
-// has populated the SKELANA commons. The hook fills `frame` from
-// whichever domain modules it needs.
+// Per-event hook. Called once per kept event from user02_, after the optional
+// record hook and the converter-owned event services have run. The hook fills
+// `frame` from whichever domain modules it needs.
 using EventHook = std::function<void(podio::Frame& frame, int run, int evt)>;
 
-// Per-job init hook (after PSINI + IFL flags + writer open) and per-job
-// teardown hook (before writer.finish()). Both optional.
+// Optional destination for an in-memory frame. Returning true acknowledges
+// that the frame was consumed; false asks PHDST to stop cleanly. This is the
+// native Code4hep boundary: the source can publish a frame directly without a
+// temporary podio file while the standalone tools continue to use `output`.
+using FrameSink = std::function<bool(podio::Frame&& frame, int run, int evt)>;
+
+// Optional per-job initialization, per-PHDST-record preparation, and per-job
+// teardown hooks. The record hook runs before the no-DST/header guards because
+// reference processors must see every record. Direct per-event calculations
+// belong in PrepareEventHook, after those guards.
 using InitHook     = std::function<void()>;
+using RecordHook   = std::function<void()>;
+using PrepareEventHook = std::function<void()>;
 using FinalizeHook = std::function<void()>;
 
 // How `run()` builds PDLINPUT (PHDST's cwd input directive file):
@@ -64,8 +74,24 @@ struct Config {
   std::vector<std::filesystem::path> input_edm4hep_extra;
   int                   max_events = -1;  // -1 = unlimited
 
+  // Values recorded under the historical metadata keys
+  // `skelana_IFLCUT`/`skelana_IFLSTR`. They describe the particle selection
+  // contract, independent of which implementation supplied it.
+  int                   selection_cut = 3;
+  int                   selection_mode = 11;
+
+  // Optional reference adapters may snapshot PSHEVT/PSBEAM into EventInfo.
+  // In that mode a second direct refresh would call VDBSPT twice and change
+  // the simulated beamspot random sequence.
+  bool                  event_info_supplied_by_record_hook = false;
+
   InitHook     on_init;
+  RecordHook   on_record;
+  // Runs after direct event/beamspot/BTAG-bank refresh and before writers.
+  // Full-DST uses this for direct package calculations that need EventInfo.
+  PrepareEventHook on_prepare_event;
   EventHook    on_event;
+  FrameSink    frame_sink;
   FinalizeHook on_finalize;
 };
 
@@ -73,7 +99,9 @@ struct Config {
 // cfg.input_mode (see InputMode above), drives phdst_(), and blocks until
 // done. File mode points PDLINPUT at a short cwd-local symlink rather than
 // the real path, because the legacy fixed-format parser truncates long ones.
-// Returns 0 only when at least one event was written.
+// Exactly one destination must be configured: `output` for a podio file or
+// `frame_sink` for in-memory delivery. Returns 0 only when at least one event
+// was delivered to that destination.
 int run(const Config& cfg);
 
 // User-callback forwarders. The binary's extern "C" user*_ overrides

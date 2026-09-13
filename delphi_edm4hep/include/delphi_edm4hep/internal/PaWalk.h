@@ -1,7 +1,7 @@
 // PaWalk.h — internal header (not exported).
 //
 // Helpers for walking the per-event PA chain (LDTOP-1 -> per-PV -> per-PA)
-// and looking up named PA sub-banks via the SKELANA LPHPA Fortran function.
+// and looking up named PA sub-banks via the DELPHI LPHPA Fortran function.
 // Used by Tracking, Calorimeter, ParticleId — wherever bank-level reads
 // are needed.
 //
@@ -27,7 +27,7 @@ namespace phdst {
 
 namespace delphi_edm4hep::pawalk {
 
-// SKELANA LPHPA wrapper: get the L-address of a named PA sub-bank.
+// DELPHI LPHPA wrapper: get the L-address of a named PA sub-bank.
 // Returns 0 if the sub-bank isn't present in this PA. `nump` defaults
 // to 0 (the standard "first occurrence" lookup that matches the
 // long-form `Q(LPHPA('NAME', lpa) + N)` idiom in the legacy converter).

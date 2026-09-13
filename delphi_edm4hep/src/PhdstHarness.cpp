@@ -6,21 +6,21 @@
 // are Fortran-linkage entry points that the binary's overrides forward to.
 //
 // The binary's user00_..user99_ overrides must live in the *binary* TU
-// (not in this library), because libphdstxx.a / libskelanaxx.a ship
-// default stubs and a static-archive double definition would error.
+// (not in this library), because the legacy archives ship default stubs and a
+// static-archive double definition would error.
 
 #include "delphi_edm4hep/PhdstHarness.h"
 
 #include "delphi_edm4hep/internal/DstCensus.h"
 
 #include "delphi_edm4hep/CollectionWriter.h"
+#include "delphi_edm4hep/Btag/BtagInfo.h"
+#include "delphi_edm4hep/Event/EventInfo.h"
 
 #include "phdst/functions.hpp"   // ph::PHSET, phdst_, ph::IIIRUN etc.
 #include "phdst/phciii.hpp"
 #include "phdst/uxcom.hpp"
 #include "phdst/uxlink.hpp"
-#include "skelana/functions.hpp" // sk::psini_, sk::psbeg_
-#include "skelana/pscflg.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -31,6 +31,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -39,7 +40,6 @@
 #include <unistd.h>
 
 namespace ph = phdst;
-namespace sk = skelana;
 
 namespace delphi_edm4hep::harness {
 
@@ -70,44 +70,8 @@ long                               g_n_written = 0;
 long                               g_n_no_dst = 0;
 long                               g_n_redelivered = 0;
 bool                               g_callback_failed = false;
+bool                               g_stop_requested = false;
 std::string                        g_callback_failure;
-
-// Configure SKELANA IFL* flags. These activate the standard DELPHI
-// analysis processors and are copied verbatim from
-// delphi-nanoaod/config/delphi-nanoaod.yaml (the same values the current
-// SDST converter uses; bit-by-bit-compatible output).
-void setSkelanaFlags() {
-  sk::IFLTRA = 1;
-  sk::IFLODR = 1;
-  sk::IFLVEC = 22;
-  sk::IFLSTR = 11;
-  sk::IFLCUT = 3;
-  sk::IFLRVR = 111;
-  sk::IFLSIM = 1;
-  sk::IFLBSP = 2;
-  // AABTAG runs on every event: PSFBTG fills the per-track b-tag commons, and
-  // the stored BTAG bank is read separately, so both tags are emitted.
-  // IFLPVT = 0 keeps SKELANA's primary vertex intact; AABTAG's own vertex is
-  // emitted as a separate collection.
-  sk::IFLBTG = 2;
-  sk::IFLPVT = 0;
-  sk::IFLVDR = 1;
-  sk::IFLFCT = 1;
-  sk::IFLRNQ = 0;
-  sk::IFLBHP = 1;
-  sk::IFLUTE = 1;
-  sk::IFLVDH = 1;
-  sk::IFLMUO = 1;
-  sk::IFLECL = 22;
-  sk::IFLELE = 1;
-  sk::IFLEMC = 1;
-  sk::IFLPHO = 1;
-  sk::IFLPHC = 1;
-  sk::IFLSTC = 1;
-  sk::IFLHAC = 1;
-  sk::IFLHAD = 1;
-  sk::IFLRV0 = 1;
-}
 
 void recordCallbackFailure(const char* phase, const char* message) noexcept {
   const bool first_failure = !g_callback_failed;
@@ -158,18 +122,23 @@ void finishWriterNoexcept(const char* phase) noexcept {
 
 void on_user00() noexcept {
   guardCallback("user00 initialization", [] {
-    // Suppress FPE during SKELANA's borderline-track work — without this,
-    // transient FPEs in PSHSCT/PSHBANKS would change IREJ outcomes.
+    // Suppress FPE in the DELPHI package calls. Direct readers and the optional
+    // validation oracle are both insulated from package-level traps by this
+    // setting.
     ph::PHSET("FPE", 0);
-    sk::PSINI();
-    setSkelanaFlags();
+    if (g_cfg.on_init) g_cfg.on_init();
+    event::initialize();
+    btag::initialize();
 
-    if (g_cfg.output.empty()) {
-      std::cerr << "harness::on_user00: output path not set\n";
-      std::exit(2);
+    if ((g_cfg.output.empty() && !g_cfg.frame_sink) ||
+        (!g_cfg.output.empty() && g_cfg.frame_sink)) {
+      throw std::invalid_argument(
+          "exactly one of output and frame_sink must be configured");
     }
-    g_writer = std::make_unique<podio::ROOTWriter>(g_cfg.output.string());
-    std::cout << "delphi_edm4hep::harness: opened " << g_cfg.output << "\n";
+    if (!g_cfg.output.empty()) {
+      g_writer = std::make_unique<podio::ROOTWriter>(g_cfg.output.string());
+      std::cout << "delphi_edm4hep::harness: opened " << g_cfg.output << "\n";
+    }
 
     // Assemble the list of intermediate(s): the primary input_edm4hep
     // plus any extras to union with it.
@@ -215,7 +184,6 @@ void on_user00() noexcept {
                 << " unique (run, evt) keys total\n";
     }
 
-    if (g_cfg.on_init) g_cfg.on_init();
   });
 }
 
@@ -223,6 +191,10 @@ void on_user01(int* need) noexcept {
   if (!need) return;
   if (g_callback_failed) {
     *need = -3;  // stop after a caught C++ callback failure
+    return;
+  }
+  if (g_stop_requested) {
+    *need = -3;  // the in-memory consumer has finished
     return;
   }
   if (g_cfg.max_events > 0 && g_n_written >= g_cfg.max_events) {
@@ -236,13 +208,12 @@ static void on_user02_impl() {
   ++g_n_seen;
   if (g_cfg.max_events > 0 && g_n_written >= g_cfg.max_events) return;
 
-  sk::PSBEG();
+  if (g_cfg.on_record) g_cfg.on_record();
 
   // Records with no DST bank are not events. File headers and end-of-run
   // trailers reach this callback too, and can appear mid-file. They carry
-  // no event of their own: the SKELANA commons still hold the preceding
-  // event's values, so emitting one produces a frame whose event-level
-  // quantities belong to a different event.
+  // no event of their own. Emitting one would either reuse package state from
+  // the preceding event or ask direct services to decode missing pilot data.
   if (ph::LDTOP <= 0) { ++g_n_no_dst; return; }
 
   // Dedup. The data fullDST (.fadana) delivers each physical event as
@@ -259,6 +230,13 @@ static void on_user02_impl() {
   // DELSIM's event 1 is a setup record that has a DST bank but no PV chain;
   // drop it so the output event count equals the number of physics events.
   if (g_n_seen == 1 && ph::LQ(ph::LDTOP - 1) == 0) return;
+
+  // Only query the direct DELPHI event services after the record guards.
+  // Header/setup records can lack pilot blocklets such as DANA and must not
+  // be treated as physics events.
+  if (!g_cfg.event_info_supplied_by_record_hook) event::refresh();
+  btag::refresh();
+  if (g_cfg.on_prepare_event) g_cfg.on_prepare_event();
 
   podio::Frame frame;
 
@@ -303,7 +281,15 @@ static void on_user02_impl() {
     g_cfg.on_event(frame, ph::IIIRUN, ph::IIIEVT);
   }
 
-  g_writer->writeFrame(frame, "events");
+  if (g_cfg.frame_sink) {
+    if (!g_cfg.frame_sink(std::move(frame), ph::IIIRUN, ph::IIIEVT)) {
+      g_stop_requested = true;
+      g_current_sdst_frame = nullptr;
+      return;
+    }
+  } else {
+    g_writer->writeFrame(frame, "events");
+  }
   g_current_sdst_frame = nullptr;
   ++g_n_written;
 
@@ -340,12 +326,10 @@ void on_user99() noexcept {
     meta.putParameter("dst_pa_modules_present",      census::paModules());
     meta.putParameter("dst_pilot_blocklets_present", census::pilotBlocklets());
 
-    // The SKELANA track selection this file was produced with. IFLCUT names
-    // the cut table (1 old SKELANA, 2 May-98 tuning, 3 April-99 tuning; the
-    // tables are in the README). IFLSTR = 11 means rejected tracks are flagged
-    // in VECP_LVLOCK, not removed.
-    meta.putParameter("skelana_IFLCUT", sk::IFLCUT);
-    meta.putParameter("skelana_IFLSTR", sk::IFLSTR);
+    // Historical key names retained for file compatibility. These values now
+    // describe the selection contract rather than exposing a COMMON block.
+    meta.putParameter("skelana_IFLCUT", g_cfg.selection_cut);
+    meta.putParameter("skelana_IFLSTR", g_cfg.selection_mode);
     g_writer->writeFrame(meta, "metadata");
   });
 
@@ -371,8 +355,13 @@ void on_user99() noexcept {
       std::cerr << "delphi_edm4hep::harness: aborted after " << g_n_written
                 << " written events; partial output is not publishable\n";
     } else {
-      std::cout << "delphi_edm4hep::harness: wrote " << g_n_written
-                << " events to " << g_cfg.output << "\n";
+      if (!g_cfg.output.empty()) {
+        std::cout << "delphi_edm4hep::harness: wrote " << g_n_written
+                  << " events to " << g_cfg.output << "\n";
+      } else {
+        std::cout << "delphi_edm4hep::harness: delivered " << g_n_written
+                  << " events to the in-memory source\n";
+      }
     }
   } catch (...) {
     // Diagnostics are best effort; the failure state and exit code are not.
@@ -388,6 +377,7 @@ int run(const Config& cfg) {
   g_n_no_dst             = 0;
   g_n_redelivered        = 0;
   g_callback_failed      = false;
+  g_stop_requested       = false;
   g_callback_failure.clear();
   g_current_sdst_frame   = nullptr;
   g_writer.reset();

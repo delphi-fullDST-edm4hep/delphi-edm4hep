@@ -7,6 +7,7 @@
 
 #include <edm4hep/MutableReconstructedParticle.h>
 
+#include <unordered_map>
 #include <vector>
 
 namespace delphi_edm4hep::tracking {
@@ -22,8 +23,16 @@ namespace delphi_edm4hep::tracking {
 //     collection index, or -1 if Tracking dropped the PA.
 struct Output {
   std::vector<edm4hep::MutableReconstructedParticle> particle_handles;
+  // Raw PA address parallel to particle_handles. It lets downstream direct
+  // decoders preserve the converter's particle/VECP ordering without a
+  // SKELANA correspondence common.
+  std::vector<int> particle_lpas;
   std::vector<int> vecp_to_particle;
   std::vector<int> pa_to_particle;
+  // Raw ZEBRA PA address -> particle collection index. Direct decoders use
+  // this for banks whose reference links point at PA records (V0, photon
+  // conversions, and simulation correspondence tables).
+  std::unordered_map<int, int> lpa_to_particle;
 };
 
 }  // namespace delphi_edm4hep::tracking

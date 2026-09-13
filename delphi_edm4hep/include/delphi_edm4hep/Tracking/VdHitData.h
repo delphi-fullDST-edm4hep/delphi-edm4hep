@@ -6,20 +6,16 @@
 
 #include <edm4hep/TrackerHit3D.h>
 
+#include <unordered_map>
 #include <vector>
 
 namespace delphi_edm4hep::vd_hits {
 
-// Output of VdHitsWriter::emit(): the associated Vertex-Detector hits,
-// grouped by the SKELANA charged-track ordinal they belong to, so the track
-// writer can link each track to its own hits while the track is still
-// mutable.
-//
-//   vecp_to_hits[j] : hits on charged VECP track j (1..NCVECP). Index 0 is
-//                     unused so the ordinal indexes directly. Empty for a
-//                     track with no associated hits.
+// Output of VdHitsWriter::emit(): associated Vertex-Detector hits grouped by
+// the raw PA reference stored in the compact hit bank. The track writer uses
+// that stable address to attach the hits while its Track is still mutable.
 struct Output {
-  std::vector<std::vector<edm4hep::TrackerHit3D>> vecp_to_hits;
+  std::unordered_map<int, std::vector<edm4hep::TrackerHit3D>> lpa_to_hits;
 };
 
 }  // namespace delphi_edm4hep::vd_hits

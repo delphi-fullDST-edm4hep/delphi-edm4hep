@@ -125,6 +125,56 @@ struct AaflagCommon {
 };
 extern AaflagCommon aaflag_;
 
+// COMMON /AAPARM/ — package calibration controls. PSFBTG preserves NAMDST
+// around AADATA, then fixes the K0 and resolution-correction switches.
+struct AaparmCommon {
+  std::int32_t ihclbr;
+  std::int32_t ilb91;
+  std::int32_t ilb92;
+  std::int32_t ilprbr;
+  std::int32_t ilprbm;
+  float par[12];
+  char namdst[4];
+  float cutlen;
+};
+extern AaparmCommon aaparm_;
+
+// COMMON /AAJETS/. Only PTHR and THRVAL are consumed here, but spelling out
+// the complete layout pins THRVAL to the correct Fortran offset.
+struct AajetsCommon {
+  float pthr[4];
+  std::int32_t njet;
+  float pjet[10][4];
+  float phijet[10];
+  std::int32_t ijet[kMaxTracks];
+  float phiv[kMaxTracks];
+  std::int32_t ilund[kMaxTracks];
+  float thrval;
+  float oblval;
+  std::int32_t ithr[kMaxTracks];
+  float distj[kMaxTracks];
+  float errtj[kMaxTracks];
+  float rpdt[kMaxTracks];
+};
+extern AajetsCommon aajets_;
+
+// COMMON /PXCONS/. PSHEVT historically supplied EBEAM before PSFBTG; direct
+// AABTAG still consults it in its multi-jet selection helpers.
+struct PxconsCommon {
+  float bmag;
+  float pionMass;
+  float pi;
+  float beamEnergy;
+  float defaultBeamEnergy;
+};
+extern PxconsCommon pxcons_;
+
+void aadata_();
+void aabtgs_(float* beamPosition, float* beamSigma, float* probabilityNegative,
+             float* probabilityPositive, float* probabilityAll);
+void aahemi_(float* probabilityNegative, float* probabilityPositive,
+             float* probabilityAll, float* thrustAxis);
+
 }  // extern "C"
 
 // Sizes reported by the shipped archives. A mismatch means the release's
@@ -135,6 +185,12 @@ static_assert(sizeof(AamnvxCommon) == 3252,
               "AAMNVX layout mismatch vs the DELPHI release (expected 0xcb4)");
 static_assert(sizeof(AaflagCommon) == 56,
               "AAFLAG layout mismatch vs the DELPHI release (expected 0x38)");
+static_assert(sizeof(AaparmCommon) == 76,
+              "AAPARM layout mismatch vs the DELPHI release (expected 0x4c)");
+static_assert(sizeof(AajetsCommon) == 3028,
+              "AAJETS layout mismatch vs the DELPHI release (expected 0xbd4)");
+static_assert(sizeof(PxconsCommon) == 20,
+              "PXCONS layout mismatch vs the DELPHI release (expected 0x14)");
 
 // ---- 1-based accessors, matching the skelana/*.hpp convention ----------
 
@@ -165,5 +221,10 @@ inline float&        EZED  (int i)      { return aamnvx_.ezed  [i - 1]; }
 inline float&        SIGZED(int i)      { return aamnvx_.sigzed[i - 1]; }
 inline std::int32_t& INMVX (int i)      { return aamnvx_.inmvx [i - 1]; }
 inline std::int32_t& IBAD()              { return aaflag_.ibad; }
+inline std::int32_t& IFRFIX()            { return aaflag_.ifrfix; }
+inline std::int32_t& IFK0ST()            { return aaflag_.ifk0st; }
+inline float&        PTHR(int i)         { return aajets_.pthr[i - 1]; }
+inline float&        THRVAL()            { return aajets_.thrval; }
+inline float&        EBEAM()             { return pxcons_.beamEnergy; }
 
 }  // namespace delphi_edm4hep::aabtag

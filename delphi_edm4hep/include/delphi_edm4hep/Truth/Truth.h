@@ -1,10 +1,10 @@
 // Truth domain — split into two writers.
 //
-// TruthGenWriter      : unpacks PSCLUJ (via PSHLUJ/PSFLUJ gating),
+// TruthGenWriter      : directly decodes compact/full simulation banks,
 //                       emits <tag>_LUJ_GenParticles, sets
 //                       ctx_.gen_truth.handles.
 // TruthRecoLinkWriter : reads ctx_.gen_truth + ctx_.tracking, walks
-//                       PSCTBL (IPAST then ISTLU) exact tables, emits
+//                       the direct PA -> simulated-particle map, emits
 //                       <tag>_TBL_RecoToGen (RecoMCParticleLink).
 //
 // The two-writer split is needed because the link emission depends on

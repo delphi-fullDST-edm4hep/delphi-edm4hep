@@ -5,6 +5,12 @@ on:
     branches: [dev]
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_data_test:
+        description: Run conversion identity (requires the online delphi-eos runner)
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -63,11 +69,16 @@ jobs:
   # The build stays on the GitHub-hosted runner; only the binaries are sent to
   # the test machine, which has 2 cores.
   #
-  # Two repository settings are required:
+  # The runner is deliberately optional: an unavailable self-hosted runner
+  # otherwise leaves every workflow queued until GitHub cancels it after 24h.
+  # Set the repository variable DELPHI_DATA_CI_ENABLED=true once the runner is
+  # registered and online. A trusted maintainer can also request this job from
+  # workflow_dispatch without changing the variable.
+  #
+  # Before enabling it for pull requests, configure:
   #   Settings > Actions > General > Fork pull request workflows from outside
   #     collaborators -> "Require approval for all external contributors"
-  #   Settings > Environments -> an environment named data-test, with required
-  #     reviewers
+  #   Settings > Environments -> data-test (add required reviewers if desired)
   #
   # No repository secrets are used, and no step here runs a privileged command.
   # The inputs are CERN Open Data; data-test.sh sets
@@ -75,8 +86,13 @@ jobs:
   data-test:
     name: conversion identity (lepdata-edm4hep)
     needs: build-and-test          # waits for every matrix channel
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.run_data_test) ||
+      (vars.DELPHI_DATA_CI_ENABLED == 'true' &&
+       (github.event_name != 'pull_request' ||
+        github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: [self-hosted, delphi-eos]
-    environment: data-test         # required-reviewer gate
+    environment: data-test
     timeout-minutes: 45
     concurrency:
       group: lepdata-edm4hep       # one run at a time on the machine

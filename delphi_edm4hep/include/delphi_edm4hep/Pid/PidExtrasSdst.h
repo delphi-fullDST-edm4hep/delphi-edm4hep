@@ -1,8 +1,7 @@
 // PidExtrasSdst domain — pass-1 only.
 //
-// VECP-track-indexed SKELANA PID commons that carry information beyond
-// the four standard pass-1 PID collections. Bound to the Particle via
-// ctx_.tracking->vecp_to_particle (same idiom as ParticleIdWriter).
+// Per-track DELPHI PID services that carry information beyond the four
+// standard pass-1 PID collections. Bound to particles by their raw PA.
 //
 // The tag collections are recomputed at conversion time rather than read from
 // the DST, so each is named for the routine that fills it. RPRODO and RPRODE

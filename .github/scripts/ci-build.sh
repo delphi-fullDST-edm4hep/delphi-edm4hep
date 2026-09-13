@@ -89,6 +89,22 @@ echo "${KEY4HEP_RELEASE}" > /repo/.key4hep-resolved
 
 cmake -S /repo/delphi_edm4hep -B /repo/build
 cmake --build /repo/build -j"$(nproc)"
+
+# Production is required to stay SKELANA-free. Check the resolved link command
+# as well as the resulting symbol tables so a future source change cannot
+# silently reintroduce either the archive or its event steering entry points.
+for target in delphi_sdst_pass delphi_fdst_pass; do
+  link=/repo/build/CMakeFiles/${target}.dir/link.txt
+  if grep -q -- 'skelanaxx' "${link}"; then
+    echo "ERROR: ${target} links libskelanaxx" >&2
+    exit 1
+  fi
+  if nm "/repo/build/${target}" | grep -Eq ' (psini_|psbeg_|pshort_)$'; then
+    echo "ERROR: ${target} contains a SKELANA steering entry point" >&2
+    exit 1
+  fi
+done
+
 ctest --test-dir /repo/build --output-on-failure
 
 # This script runs as root inside the container with the workspace bind-mounted,

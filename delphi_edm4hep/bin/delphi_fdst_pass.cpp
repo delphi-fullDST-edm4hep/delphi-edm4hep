@@ -9,25 +9,13 @@
 // Usage: delphi_fdst_pass <intermediate.edm4hep.root> <input.fadana>
 //                        <output.edm4hep.root> [-n MAX]
 
-#include "delphi_edm4hep/CollectionWriter.h"   // EventContext
-#include "delphi_edm4hep/Btag/Btag.h"
+#include "delphi_edm4hep/ConversionPipeline.h"
 #include "delphi_edm4hep/PhdstHarness.h"
-#include "delphi_edm4hep/Calorimeter/Emca.h"
-#include "delphi_edm4hep/Pid/PaPidExtras.h"
-#include "delphi_edm4hep/Calorimeter/HcalFdst.h"
-#include "delphi_edm4hep/Tracking/MainHybrid.h"
-#include "delphi_edm4hep/Tracking/MatchProvenance.h"
-#include "delphi_edm4hep/Pid/Mtpc.h"
-#include "delphi_edm4hep/Pid/PidHybrid.h"
-#include "delphi_edm4hep/Calorimeter/ShowerHybrid.h"
-#include "delphi_edm4hep/Calorimeter/SticShower.h"
-#include "delphi_edm4hep/Truth/TblHybrid.h"
-#include "delphi_edm4hep/Calorimeter/Tdha.h"
-#include "delphi_edm4hep/Tracking/TrackElements.h"
-#include "delphi_edm4hep/Tracking/TrackHybrid.h"
-#include "delphi_edm4hep/Tracking/Trax.h"
-#include "delphi_edm4hep/Calorimeter/TeadFdst.h"
-#include "delphi_edm4hep/Pid/Tof.h"
+
+#if defined(DELPHI_FDST_SKELANA_REFERENCE) || \
+    defined(DELPHI_FDST_SKELANA_INIT_REFERENCE)
+#include "delphi_edm4hep/internal/LegacySkelana.h"
+#endif
 
 #include <charconv>
 #include <cstdlib>
@@ -73,6 +61,19 @@ int main(int argc, char** argv) {
   if (argc < 4) { usage(argv[0]); return 1; }
 
   harness::Config cfg;
+  delphi_edm4hep::pipeline::configureFdst(cfg);
+#ifdef DELPHI_FDST_SKELANA_REFERENCE
+  cfg.on_prepare_event = {};
+  cfg.on_init = delphi_edm4hep::legacy_skelana::initialize;
+  cfg.on_record = delphi_edm4hep::legacy_skelana::processRecord;
+  cfg.event_info_supplied_by_record_hook = true;
+#elif defined(DELPHI_FDST_SKELANA_INIT_REFERENCE)
+  // Migration-only diagnostic: retain PSINI's one-time side effects, but
+  // prepare every event through the converter-owned readers. Comparing this
+  // executable with the full PSBEG oracle identifies whether a discrepancy
+  // belongs to initialization or to SKELANA's per-event processing graph.
+  cfg.on_init = delphi_edm4hep::legacy_skelana::initialize;
+#endif
   // argv[1] may be a comma-separated list of intermediates. A long run's
   // official short-DST events span several .al tape files; pass all the
   // tapes that contain this run so every reconstructed event finds its
@@ -115,51 +116,6 @@ int main(int argc, char** argv) {
     std::cerr << "fdst input not found: " << cfg.input << "\n";
     return 1;
   }
-
-  // Pass-2 writers. The harness already populated frame with the
-  // matching intermediate's sDST_* collections; these writers ADD
-  // fDST_* collections on top. EventContext threads cross-writer
-  // state (e.g. fdst_pa_to_sdst_track from MatchProvenanceWriter
-  // is consumed by later writers).
-  cfg.on_event = [](podio::Frame& frame, int /*run*/, int /*evt*/) {
-    using namespace delphi_edm4hep;
-    EventContext ctx;
-    // MatchProvenanceWriter must run FIRST: it populates
-    // ctx.fdst_pa_to_sdst_particle (and _track) which the other
-    // pass-2 writers consume for their setParticle linkage.
-    matchprov::MatchProvenanceWriter(frame, ctx, bank::Pass::Fdst).emit();
-    // TrackElements decodes the PA.TE* modules and must run before
-    // TrackHybrid, which links each cloned track to them.
-    track_elements::TrackElementsWriter(frame, ctx, bank::Pass::Fdst).emit();
-    trax::TraxWriter                (frame, ctx, bank::Pass::Fdst).emit();
-    track_hybrid::TrackHybridWriter (frame, ctx, bank::Pass::Fdst).emit();
-    emca::EmcaWriter       (frame, ctx, bank::Pass::Fdst).emit();
-    hcal_fdst::HcalFdstWriter       (frame, ctx, bank::Pass::Fdst).emit();
-    tead_fdst::TeadFdstWriter       (frame, ctx, bank::Pass::Fdst).emit();
-    tdha::TdhaWriter       (frame, ctx, bank::Pass::Fdst).emit();
-    stic_shower::SticShowerWriter   (frame, ctx, bank::Pass::Fdst).emit();
-    // ShowerHybrid clones sDST_EMNC/HCNC_Showers into fDST_* and must run
-    // BEFORE MainHybrid: the Particle→Cluster relation lives on the
-    // (mutable) particle, so MainHybrid re-points it onto these clones
-    // while fDST_MAIN_Particles is still being built.
-    shower_hybrid::ShowerHybridWriter(frame, ctx, bank::Pass::Fdst).emit();
-    // MainHybrid must run AFTER TrackHybrid (consumes fDST_TRAC_Tracks)
-    // and ShowerHybrid (consumes fDST_EMNC/HCNC_Showers), and BEFORE the
-    // hybrid writers that consume fDST_MAIN_Particles.
-    main_hybrid::MainHybridWriter   (frame, ctx, bank::Pass::Fdst).emit();
-    // These PA ParticleID writers link setParticle() to fDST_MAIN_Particles
-    // (1:1 with sDST_MAIN_Particles by clone index), so they MUST run AFTER
-    // MainHybrid creates it. They previously ran earlier and linked to the
-    // pass-1 sDST_MAIN_Particles, leaving final-file PID->particle relations
-    // inconsistent with the PidHybrid-repointed clones. (MU/EL/TDID + TOF + MTPC + TRAX.)
-    tof::TofWriter         (frame, ctx, bank::Pass::Fdst).emit();
-    mtpc::MtpcWriter              (frame, ctx, bank::Pass::Fdst).emit();
-    pa_pid_extras::PaPidExtrasWriter(frame, ctx, bank::Pass::Fdst).emit();
-    pid_hybrid::PidHybridWriter     (frame, ctx, bank::Pass::Fdst).emit();
-    tbl_hybrid::TblHybridWriter     (frame, ctx, bank::Pass::Fdst).emit();
-    // B-tagging. fulldst=true: SKELANA recalculates for ANY IFLBTG > 0 on
-    btag::BtagWriter                (frame, ctx, bank::Pass::Fdst).emit();
-  };
 
   return harness::run(cfg);
 }

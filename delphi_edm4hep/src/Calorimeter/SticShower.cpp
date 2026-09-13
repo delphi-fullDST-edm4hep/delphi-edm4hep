@@ -1,7 +1,7 @@
 // SticShowerWriter — runs in both passes.
 //
-// Reads the SKELANA PSCSTC common (skelana/pscemf_hpc_hac_stic.hpp). The
-// common is a fixed table with one row per VECP track, not a list of showers:
+// Reads converter-owned STIC rows. The legacy source was a fixed table with
+// one row per VECP track, not a list of showers:
 //   QSTIC(1..3, i)  energy, theta, phi                     (real)
 //   KSTIC(4..9, i)  towers, large-veto tag, combined-veto tag,
 //                   veto multiplicity A and B, Si-strip vertex   (integer)
@@ -18,17 +18,12 @@
 // module that supplied the values.
 
 #include "delphi_edm4hep/Calorimeter/SticShower.h"
-
-#include "skelana/pscemf_hpc_hac_stic.hpp"   // NSTIC, KSTIC, QSTIC, LENSTC
-#include "skelana/pscvec.hpp"                // LVPART, NVECP
+#include "delphi_edm4hep/Calorimeter/SticInfo.h"
 
 #include <edm4hep/ClusterCollection.h>
 #include <edm4hep/MutableCluster.h>
 
-#include <algorithm>
 #include <cstdint>
-
-namespace sk = skelana;
 
 namespace delphi_edm4hep::stic_shower {
 
@@ -43,28 +38,29 @@ void SticShowerWriter::emit()
   // Pass 1 reads the shortDST module SSTC; the fullDST carries STIC.
   const char* bank = fromFullDst() ? "STIC" : "SSTC";
 
-  const int last = std::min(sk::NVECP, sk::MTRACK);
-  for (int i = sk::LVPART; i <= last; ++i) {
-    bool filled = false;
-    for (int k = 1; k <= sk::LENSTC; ++k) filled = filled || sk::KSTIC(k, i) != 0;
-    if (!filled) continue;
-
+  for (const auto& row : stic::current()) {
     auto clu = col.create();
     clu.setType(kTypeBitStic);
-    clu.setEnergy(sk::QSTIC(1, i));
-    clu.setITheta(sk::QSTIC(2, i));
-    clu.setIPhi  (sk::QSTIC(3, i));
+    clu.setEnergy(row.measurement[0]);
+    clu.setITheta(row.measurement[1]);
+    clu.setIPhi  (row.measurement[2]);
     // Words 4..9, integer throughout.
-    for (int k = 4; k <= sk::LENSTC; ++k) {
-      clu.addToShapeParameters(static_cast<float>(sk::KSTIC(k, i)));
+    for (const int value : row.attributes) {
+      clu.addToShapeParameters(static_cast<float>(value));
     }
 
     // Attach the shower to the particle built from the same VECP slot. Only
     // pass 1 carries that map; pass-2 clusters are left unattached.
     if (ctx_.tracking) {
       auto& tracking = *ctx_.tracking;
-      if (i < static_cast<int>(tracking.vecp_to_particle.size())) {
-        const int p = tracking.vecp_to_particle[i];
+      if (row.lpa > 0) {
+        const auto found = tracking.lpa_to_particle.find(row.lpa);
+        if (found != tracking.lpa_to_particle.end()) {
+          tracking.particle_handles[found->second].addToClusters(clu);
+        }
+      } else if (row.vecpIndex >= 0 &&
+          row.vecpIndex < static_cast<int>(tracking.vecp_to_particle.size())) {
+        const int p = tracking.vecp_to_particle[row.vecpIndex];
         if (p >= 0) tracking.particle_handles[p].addToClusters(clu);
       }
     }

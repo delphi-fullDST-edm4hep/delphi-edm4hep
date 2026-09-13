@@ -1,160 +1,265 @@
-// PidExtrasSdstWriter — pass-1 implementation.
-//
-// Headers (skelana/*.hpp): pschdn (KHAIDN 1..4 + KHAIDT 1..4),
-// pschdr (KHAIDR 1..6), pschde (KHAIDE 1..6), pschdc (KHAIDC 1..6),
-// pscdex (QDEDX(6)=VD dE/dx, KDEDX(7)=n VD hits), pscpi0 (26 fields,
-// int at 5/6/20/21/23, float elsewhere).
+// PidExtrasSdstWriter — direct PA decoding and standalone PID algorithms.
 
 #include "delphi_edm4hep/Pid/PidExtrasSdst.h"
 
-#include "phdst/uxcom.hpp"      // IQ
-#include "phdst/uxlink.hpp"     // LDTOP
-#include "skelana/pscdex.hpp"
-#include "skelana/pschdc.hpp"
-#include "skelana/pschde.hpp"
-#include "skelana/pschdn.hpp"
-#include "skelana/pschdr.hpp"
-#include "skelana/pscpi0.hpp"
-#include "skelana/pscvec.hpp"   // LVPART, NVECP, NCVECP
+#include "delphi_edm4hep/internal/PaWalk.h"
+
+#include "phdst/uxcom.hpp"
+#include "phdst/uxlink.hpp"
 
 #include <edm4hep/MutableParticleID.h>
 #include <edm4hep/ParticleIDCollection.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
-#include <initializer_list>
 
 namespace ph = phdst;
-namespace sk = skelana;
 
 namespace delphi_edm4hep::pid_extras_sdst {
 
+extern "C" {
+void richid_();
+void getmine_(int* type);
+void xnewtag_(int* idtan, int* pion, int* kaon, int* proton, int* heavy,
+              int* pionTrack, int* kaonTrack, int* protonTrack,
+              int* heavyTrack);
+void xnewpro_(int* idtan, int* pion, int* kaon, int* proton, int* heavy,
+              int* electron, int* selection, float* probabilities);
+void getdedx_(int* lpa, float* dedx, float* sigma, int* wires, float* error);
+void rprodo_(float* momentum, int* region, float* dedx, float* sigma,
+             int* wires, float* errors, float* differences, float* pulls,
+             float* probabilities, int* quality, int* pion, int* kaon,
+             int* proton, int* heavy, int* electron);
+void rprode_(int* lpa, float* momentum, int* region, float* dedx,
+             float* sigma, int* wires, float* errors, float* differences,
+             float* pulls, float* probabilities, int* quality, int* pion,
+             int* kaon, int* proton, int* heavy, int* electron);
+void rproco_(float* momentum, float* dedxProbabilities,
+             float* richProbabilities, int* region, int* pion, int* kaon,
+             int* proton, int* heavy, int* electron);
+}
+
 namespace {
 
-// algorithmType constants; 1..7 and 111 are assigned in ParticleId.cpp.
-constexpr std::int32_t kAlgoDedxVD  = 7;
+constexpr std::int32_t kAlgoDedxVD = 7;
 constexpr std::int32_t kAlgoXnewtag = 41;
 constexpr std::int32_t kAlgoXnewpro = 42;
-constexpr std::int32_t kAlgoRprodo  = 43;
-constexpr std::int32_t kAlgoRprode  = 44;
-constexpr std::int32_t kAlgoRproco  = 45;
-constexpr std::int32_t kAlgoPi0     = 111;
-
-// Value left in a tag SKELANA had no information for.
+constexpr std::int32_t kAlgoRprodo = 43;
+constexpr std::int32_t kAlgoRprode = 44;
+constexpr std::int32_t kAlgoRproco = 45;
+constexpr std::int32_t kAlgoPi0 = 111;
 constexpr int kNoTag = -1;
-
-// PXDST version at or above which SKELANA runs RPRODE in place of RPRODO.
 constexpr int kRprodeMinPxdst = 333;
 
-// PSCPI0 fields stored as integers (1-based field index); the rest float.
-bool pi0FieldIsInt(int f) {
-  return f == 5 || f == 6 || f == 20 || f == 21 || f == 23;
+bool pi0FieldIsInt(int field) {
+  return field == 5 || field == 6 || field == 20 || field == 21 ||
+         field == 23;
+}
+
+bool useRprode() {
+  return ph::LDTOP > 0 && ph::IQ(ph::LDTOP + 3) >= kRprodeMinPxdst;
+}
+
+struct HaidLayout {
+  int bank = 0;
+  int ion = 0;
+  int gas = 0;
+  int liquid = 0;
+  int vd = 0;
+  int ring = 0;
+  int quality = 0;
+  int offset = 2;
+};
+
+HaidLayout haidLayout(int lpa) {
+  HaidLayout out;
+  out.bank = pawalk::lphpa("HAID", lpa);
+  if (out.bank <= 0) return out;
+  const int descriptor = std::lround(ph::Q(out.bank + 2));
+  out.ion = descriptor % 10;
+  out.gas = (descriptor / 10) % 10;
+  out.liquid = (descriptor / 100) % 10;
+  out.vd = (descriptor / 1000) % 10;
+  out.ring = (descriptor / 10000) % 10;
+  out.quality = (descriptor / 100000) % 10;
+  if (out.ion >= 4) out.offset += 4;
+  if (out.ion == 2 || out.ion == 6) out.offset += 2;
+  return out;
+}
+
+struct DerivedTags {
+  std::array<int, 8> angle{};
+  std::array<int, 6> rich{};
+  std::array<int, 6> dedx{};
+  std::array<int, 6> combined{};
+};
+
+DerivedTags calculateTags(int lpa, bool haveHaid) {
+  DerivedTags out;
+  if (!haveHaid) return out;  // historical zero row for a missing HAID module
+  out.angle.fill(kNoTag);
+  out.rich.fill(kNoTag);
+  out.dedx.fill(kNoTag);
+  out.combined.fill(kNoTag);
+
+  const int lmain = pawalk::lphpa("MAIN", lpa);
+  if (lmain <= 0) return out;
+  const float px = ph::Q(lmain + 3);
+  const float py = ph::Q(lmain + 4);
+  const float pz = ph::Q(lmain + 5);
+  float momentum = std::sqrt(px * px + py * py + pz * pz);
+  if (momentum <= 0.f) return out;
+  int region = std::abs(pz / momentum) > 0.7f ? 2 : 1;
+  int idtan = ph::IQ(lpa + 1);
+
+  int inputType = 1;
+  getmine_(&inputType);
+  xnewtag_(&idtan, &out.angle[0], &out.angle[1], &out.angle[2],
+           &out.angle[3], &out.angle[4], &out.angle[5], &out.angle[6],
+           &out.angle[7]);
+
+  std::array<float, 5> richProbabilities{};
+  xnewpro_(&idtan, &out.rich[0], &out.rich[1], &out.rich[2], &out.rich[3],
+           &out.rich[4], &out.rich[5], richProbabilities.data());
+
+  float dedx = 0.f;
+  float sigma = 0.f;
+  int wires = 0;
+  std::array<float, 5> errors{}, differences{}, pulls{}, dedxProbabilities{};
+  int dedxQuality = 0;
+  if (useRprode()) {
+    rprode_(&lpa, &momentum, &region, &dedx, &sigma, &wires, errors.data(),
+            differences.data(), pulls.data(), dedxProbabilities.data(),
+            &dedxQuality, &out.dedx[0], &out.dedx[1], &out.dedx[2],
+            &out.dedx[3], &out.dedx[4]);
+  } else {
+    float error = 0.f;
+    getdedx_(&lpa, &dedx, &sigma, &wires, &error);
+    rprodo_(&momentum, &region, &dedx, &sigma, &wires, errors.data(),
+            differences.data(), pulls.data(), dedxProbabilities.data(),
+            &dedxQuality, &out.dedx[0], &out.dedx[1], &out.dedx[2],
+            &out.dedx[3], &out.dedx[4]);
+  }
+  if (dedxQuality == 2) out.dedx[5] = 1;
+
+  rproco_(&momentum, dedxProbabilities.data(), richProbabilities.data(),
+          &region, &out.combined[0], &out.combined[1], &out.combined[2],
+          &out.combined[3], &out.combined[4]);
+  if (out.rich[5] >= 0) {
+    out.combined[5] = out.rich[5];
+    if (dedxQuality == 2) out.combined[5] |= 1 << 2;
+  } else if (dedxQuality == 2) {
+    out.combined[5] = 1 << 2;
+  }
+  return out;
+}
+
+std::array<float, 26> readPi0(int lpa) {
+  std::array<float, 26> values{};
+  const int bank = pawalk::lphpa("PHOT", lpa);
+  if (bank <= 0) return values;
+  const int descriptor = std::lround(ph::Q(bank + 2));
+  const int photonLength = descriptor % 100;
+  const int pi0Length = descriptor / 100;
+  int offset = 2;
+  if (photonLength > 0) offset += photonLength - 1;
+  if (pi0Length <= 0) return values;
+
+  for (int field = 1; field <= 19; ++field) {
+    values[field - 1] = ph::Q(bank + offset + field);
+  }
+  const int packed = std::lround(ph::Q(bank + offset + 20));
+  values[19] = static_cast<float>(packed % 100);
+  values[20] = static_cast<float>(packed / 100);
+  if (pi0Length > 20) {
+    values[21] = ph::Q(bank + offset + 23);
+    values[22] = static_cast<float>(std::lround(ph::Q(bank + offset + 24)));
+    values[23] = ph::Q(bank + offset + 25);
+    values[24] = ph::Q(bank + offset + 26);
+    values[25] = ph::Q(bank + offset + 27);
+  }
+  return values;
 }
 
 }  // namespace
 
-void PidExtrasSdstWriter::emit()
-{
-  // RPRODE superseded RPRODO at PXDST version 333. Both fill KHAIDE; SKELANA
-  // runs whichever matches the version word of the event, so the collection is
-  // named for the one that ran.
-  const bool rprode = ph::LDTOP > 0
-                   && ph::IQ(ph::LDTOP + 3) >= kRprodeMinPxdst;
-
+void PidExtrasSdstWriter::emit() {
+  const bool rprode = useRprode();
   edm4hep::ParticleIDCollection xnewtagCol, xnewproCol, dedxCol, rprocoCol,
-                                dedxVdCol, pi0Col;
+      dedxVdCol, pi0Col;
 
-  // Emitted on every event, filled or not, so that the collection set of the
-  // output is the same in every event.
   auto putAll = [&] {
-    put(std::move(xnewtagCol), "XNEWTAG", "RichTags",     Provenance::Derived);
-    put(std::move(xnewproCol), "XNEWPRO", "RichTags",     Provenance::Derived);
+    put(std::move(xnewtagCol), "XNEWTAG", "RichTags", Provenance::Derived);
+    put(std::move(xnewproCol), "XNEWPRO", "RichTags", Provenance::Derived);
     put(std::move(dedxCol), rprode ? "RPRODE" : "RPRODO", "DedxTags",
         Provenance::Derived);
-    put(std::move(rprocoCol),  "RPROCO",  "CombinedTags", Provenance::Derived);
-    put(std::move(dedxVdCol),  "HAID",    "dEdxVD",       Provenance::Transcribed);
-    put(std::move(pi0Col),     "PHOT",    "Pi0ID",        Provenance::Transcribed);
+    put(std::move(rprocoCol), "RPROCO", "CombinedTags", Provenance::Derived);
+    put(std::move(dedxVdCol), "HAID", "dEdxVD", Provenance::Transcribed);
+    put(std::move(pi0Col), "PHOT", "Pi0ID", Provenance::Transcribed);
   };
-
-  if (!ctx_.tracking) { putAll(); return; }
-  const auto& tracking = *ctx_.tracking;
-
-  // Attach a PID row to the Particle built from the same VECP slot.
-  auto bind = [&](edm4hep::MutableParticleID pid, int i) {
-    if (i >= static_cast<int>(tracking.vecp_to_particle.size())) return;
-    const int p = tracking.vecp_to_particle[i];
-    if (p >= 0) pid.setParticle(tracking.particle_handles[p]);
-  };
-
-  // Add one row of tags for track i. SKELANA leaves -1 in every tag it had no
-  // information for, so a row with nothing but -1 carries no result and is
-  // dropped.
-  auto putTags = [&](edm4hep::ParticleIDCollection& coll, std::int32_t algo,
-                     std::initializer_list<int> tags, int i) {
-    if (std::all_of(tags.begin(), tags.end(),
-                    [](int t) { return t == kNoTag; })) return;
-    auto pid = coll.create();
-    pid.setAlgorithmType(algo);
-    for (int t : tags) pid.addToParameters(static_cast<float>(t));
-    bind(pid, i);
-  };
-
-  // PSCVEC orders charged particles first; these commons are charged-only.
-  for (int i = sk::LVPART; i <= sk::NCVECP; ++i) {
-    if (i >= static_cast<int>(tracking.vecp_to_particle.size())) break;
-    if (tracking.vecp_to_particle[i] < 0) continue;
-
-    // RICH gas and liquid tags from the Cherenkov angle, photon count and
-    // quality flag, with no outer-detector or FCB requirement. KHAIDT holds
-    // the track-quality acceptance belonging to each KHAIDN tag.
-    putTags(xnewtagCol, kAlgoXnewtag,
-            {sk::KHAIDN(1, i), sk::KHAIDN(2, i), sk::KHAIDN(3, i), sk::KHAIDN(4, i),
-             sk::KHAIDT(1, i), sk::KHAIDT(2, i), sk::KHAIDT(3, i), sk::KHAIDT(4, i)}, i);
-
-    // RICH tags from the RIBMEAN gas and liquid probabilities, with no
-    // tracking requirement. KHAIDR(6) is a selection flag: bit 1 liquid OK,
-    // bit 2 gas OK.
-    putTags(xnewproCol, kAlgoXnewpro,
-            {sk::KHAIDR(1, i), sk::KHAIDR(2, i), sk::KHAIDR(3, i),
-             sk::KHAIDR(4, i), sk::KHAIDR(5, i), sk::KHAIDR(6, i)}, i);
-
-    // Tags from the TPC dE/dx probabilities. KHAIDE(6) is 1 when the track had
-    // more than 30 TPC wires and sat within 2.5 s.d. of a hypothesis.
-    putTags(dedxCol, rprode ? kAlgoRprode : kAlgoRprodo,
-            {sk::KHAIDE(1, i), sk::KHAIDE(2, i), sk::KHAIDE(3, i),
-             sk::KHAIDE(4, i), sk::KHAIDE(5, i), sk::KHAIDE(6, i)}, i);
-
-    // Tags from the RICH and dE/dx probabilities combined. KHAIDC(6) is the
-    // selection flag of both: bit 1 liquid OK, bit 2 gas OK, bit 3 TPC OK.
-    putTags(rprocoCol, kAlgoRproco,
-            {sk::KHAIDC(1, i), sk::KHAIDC(2, i), sk::KHAIDC(3, i),
-             sk::KHAIDC(4, i), sk::KHAIDC(5, i), sk::KHAIDC(6, i)}, i);
-
-    // VD-only dE/dx, distinct from the TPC dE/dx in sDST_HAID_dEdx.
-    const int nVD = sk::KDEDX(7, i);
-    if (nVD > 0) {
-      auto pid = dedxVdCol.create();
-      pid.setAlgorithmType(kAlgoDedxVD);
-      pid.addToParameters(sk::QDEDX(6, i));            // VD dE/dx
-      pid.addToParameters(static_cast<float>(nVD));    // n VD hits
-      bind(pid, i);
-    }
+  if (!ctx_.tracking) {
+    putAll();
+    return;
   }
+  const auto& tracking = *ctx_.tracking;
+  richid_();
 
-  // π⁰→γγ HPCANA fit — scan the full VECP range; emit where a fit exists.
-  if (sk::NPI0 > 0) {
-    for (int i = sk::LVPART; i <= sk::NVECP; ++i) {
-      if (i >= static_cast<int>(tracking.vecp_to_particle.size())) break;
-      if (tracking.vecp_to_particle[i] < 0) continue;
-      if (sk::QPI0(1, i) <= 0.f) continue;             // no fit mass
-      auto pid = pi0Col.create();
-      pid.setAlgorithmType(kAlgoPi0);
-      for (int f = 1; f <= 26; ++f) {
-        pid.addToParameters(pi0FieldIsInt(f)
-                              ? static_cast<float>(sk::KPI0(f, i))
-                              : sk::QPI0(f, i));
+  auto makePid = [&](edm4hep::ParticleIDCollection& collection, int particle,
+                     std::int32_t algorithm) {
+    auto pid = collection.create();
+    pid.setAlgorithmType(algorithm);
+    pid.setParticle(tracking.particle_handles[particle]);
+    return pid;
+  };
+  auto emitTags = [&](edm4hep::ParticleIDCollection& collection, int particle,
+                      std::int32_t algorithm, const auto& tags) {
+    if (std::all_of(tags.begin(), tags.end(),
+                    [](int value) { return value == kNoTag; })) return;
+    auto pid = makePid(collection, particle, algorithm);
+    for (const int value : tags) pid.addToParameters(static_cast<float>(value));
+  };
+
+  for (std::size_t j = 1; j < tracking.vecp_to_particle.size(); ++j) {
+    const int particle = tracking.vecp_to_particle[j];
+    if (particle < 0 ||
+        particle >= static_cast<int>(tracking.particle_lpas.size())) continue;
+    const int lpa = tracking.particle_lpas[particle];
+    const int lmain = pawalk::lphpa("MAIN", lpa);
+    if (lmain <= 0) continue;
+    const bool charged = std::lround(ph::Q(lmain + 8)) != 0;
+
+    if (charged) {
+      const HaidLayout layout = haidLayout(lpa);
+      const DerivedTags tags = calculateTags(lpa, layout.bank > 0);
+      emitTags(xnewtagCol, particle, kAlgoXnewtag, tags.angle);
+      emitTags(xnewproCol, particle, kAlgoXnewpro, tags.rich);
+      emitTags(dedxCol, particle, rprode ? kAlgoRprode : kAlgoRprodo,
+               tags.dedx);
+      emitTags(rprocoCol, particle, kAlgoRproco, tags.combined);
+
+      if (layout.bank > 0 && layout.vd != 0) {
+        const int vdOffset =
+            layout.offset + layout.gas + layout.liquid;
+        const float value = ph::Q(layout.bank + vdOffset + 1);
+        const int hits = std::lround(ph::Q(layout.bank + vdOffset + 2));
+        if (hits > 0) {
+          auto pid = makePid(dedxVdCol, particle, kAlgoDedxVD);
+          pid.addToParameters(value);
+          pid.addToParameters(static_cast<float>(hits));
+        }
       }
-      bind(pid, i);
+    }
+
+    const auto pi0 = readPi0(lpa);
+    if (pi0[0] > 0.f) {
+      auto pid = makePid(pi0Col, particle, kAlgoPi0);
+      for (int field = 1; field <= 26; ++field) {
+        pid.addToParameters(pi0FieldIsInt(field)
+                                ? static_cast<float>(std::lround(pi0[field - 1]))
+                                : pi0[field - 1]);
+      }
     }
   }
 

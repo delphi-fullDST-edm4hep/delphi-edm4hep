@@ -1,93 +1,298 @@
-// Truth domain — TruthGenWriter + TruthRecoLinkWriter.
+// Truth domain — direct DELPHI simulation-bank decoding.
 //
-// PSCLUJ (filled by PSHLUJ on sDST or PSFLUJ on fDST per bank-presence
-// gating) feeds TruthGenWriter. PSCTBL exact tables (IPAST then ISTLU)
-// feed TruthRecoLinkWriter, replacing the legacy helix-NN match.
+// The compact shortDST PVS/STSH structure and the fullDST PV/ST/SH chains are
+// decoded here into a small converter-owned LU-like record. The PA -> truth
+// correspondence is derived from the same raw links, replacing PSHLUJ,
+// PSFLUJ, PSHSIM, PSFSIM, PSCLUJ and PSCTBL.
 
 #include "delphi_edm4hep/Truth/Truth.h"
 
 #include "phdst/uxcom.hpp"
 #include "phdst/uxlink.hpp"
-#include "skelana/pscluj.hpp"
-#include "skelana/psctbl.hpp"
 
 #include <edm4hep/MCParticleCollection.h>
 #include <edm4hep/RecoMCParticleLinkCollection.h>
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <optional>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
-// JETSET helpers. Charges via LUCHGE in units of e/3 (exhaustive PDG
-// coverage; replaces the 16-entry whitelist of the legacy code).
-extern "C" {
-  void pshluj_();
-  void psfluj_();
-  int  luchge_(int* kf);
-}
+// JETSET's exhaustive PDG charge table. LUCHGE returns charge in units e/3.
+extern "C" int luchge_(int* kf);
 
 namespace ph = phdst;
-namespace sk = skelana;
 
 namespace delphi_edm4hep::truth {
 
 namespace {
 
+constexpr int kMaxTruthParticles = 4000;
+constexpr int kMaxInitialParticles = 20;
+
+struct TruthParticle {
+  int status = 0;
+  int pdg = 0;
+  int parent = 0;  // one-based LU-like index; zero means no parent
+  std::array<float, 3> momentum{};
+  float mass = 0.f;
+  std::array<float, 3> vertex{};  // millimetres in the DELPHI contract
+};
+
+struct DecodedTruth {
+  std::vector<TruthParticle> particles;
+  // Raw reconstructed PA address -> zero-based index in particles.
+  std::unordered_map<int, int> lpaToGen;
+};
+
+struct CompactSimulationBanks {
+  int pvs = 0;
+  int stsh = 0;
+};
+
+int bitField(int word, int first, int length) {
+  const auto bits = static_cast<std::uint32_t>(word);
+  const auto mask = (std::uint32_t{1} << length) - 1U;
+  return static_cast<int>((bits >> (first - 1)) & mask);
+}
+
 inline float charge_from_pdg(int pdg) {
   return static_cast<float>(luchge_(&pdg)) / 3.0f;
 }
 
-// Gate the PSCLUJ unpacker on bank presence in the LDTOP chain, invoke
-// the sDST or fDST routine, return sk::NP. (full-DST SH chain at
-// LDTOP-3, sDST condensed LU at LDTOP-28/-29.)
-int unpack_lujets() {
-  sk::NP = 0;
-  if (ph::LDTOP <= 0) return 0;
-  const bool short_sim = (ph::IQ(ph::LDTOP - 2) > 28)
-                      && (ph::LQ(ph::LDTOP - 28) != 0)
-                      && (ph::LQ(ph::LDTOP - 29) != 0);
-  const bool full_sim  = (ph::LQ(ph::LDTOP - 3) != 0);
-  if      (short_sim) pshluj_();
-  else if (full_sim)  psfluj_();
-  return sk::NP;
+std::optional<CompactSimulationBanks> compactSimulationBanks() {
+  if (ph::LDTOP <= 0) return std::nullopt;
+  const int links = ph::IQ(ph::LDTOP - 2);
+  if (links > 28) {
+    const int pvs = ph::LQ(ph::LDTOP - 28);
+    const int stsh = ph::LQ(ph::LDTOP - 29);
+    if (pvs > 0 && stsh > 0) return CompactSimulationBanks{pvs, stsh};
+  }
+  // ISVER <= 101 used the older compact link slots. Testing the bank pair is
+  // sufficient here and avoids importing SKELANA's event-version common.
+  if (links > 18) {
+    const int pvs = ph::LQ(ph::LDTOP - 18);
+    const int stsh = ph::LQ(ph::LDTOP - 19);
+    if (pvs > 0 && stsh > 0) return CompactSimulationBanks{pvs, stsh};
+  }
+  return std::nullopt;
 }
 
-// Per-event MC truth interaction point (sim-PV), in mm. Handles BOTH sim
-// layouts: shortDST (LPVS at LDTOP-28, first sim-PV x/y/z at Q(ip+4..6) cm) and
-// fullDST (LDTOP-3 -> LSH -> LST -> LPV, x/y/z at Q(lpv+5..7) cm); same decode
-// as delphi-raw-nanoaod fillSimPV. Returns nullopt when no sim banks are present
-// (real data / missing bank). Used to shift the gen-frame truth (primary at
-// ~origin) into the DELSIM/reco frame (event placed at the beamspot XYZP), so
-// MCParticle vertices/endpoints align with the reco PV.
-std::optional<std::array<double, 3>> read_sim_pv_mm() {
-  if (ph::LDTOP <= 0) return std::nullopt;
-  // shortDST sim layout: LPVS at LDTOP-28, x/y/z at +4/+5/+6 (cm). Guard the
-  // down-link index exactly as unpack_lujets() does -- LDTOP-28 is only a valid
-  // link when the LDTOP bank has >28 down-links -- so this is safe on real data
-  // (and on fullDST, where it falls through to the LSH-chain walk below).
-  if (ph::IQ(ph::LDTOP - 2) > 28) {
-    const int lpvs = ph::LQ(ph::LDTOP - 28);
-    if (lpvs > 0) {
-      const int npvs = ph::IQ(lpvs + 1);
-      if (npvs >= 1) {
-        const int ip = lpvs + 1 + npvs;
-        return std::array<double, 3>{ph::Q(ip + 4) * 10.0,   // cm -> mm
-                                     ph::Q(ip + 5) * 10.0,
-                                     ph::Q(ip + 6) * 10.0};
-      }
+// Direct C++ port of PSSORT. `mother` and `sister` are one-based compact-SH
+// indices. The returned vector maps LU-like order to compact-SH order.
+std::optional<std::vector<int>> topologicalOrder(
+    const std::vector<int>& mother, std::vector<int> sister) {
+  const int n = static_cast<int>(mother.size()) - 1;
+  if (n <= 0) return std::vector<int>{};
+
+  std::vector<int> initial;
+  for (int i = 1; i <= n; ++i) {
+    if (mother[i] == 0) initial.push_back(i);
+  }
+  if (initial.empty() ||
+      initial.size() > static_cast<std::size_t>(kMaxInitialParticles)) {
+    return std::nullopt;
+  }
+  for (std::size_t i = 0; i + 1 < initial.size(); ++i) {
+    sister[initial[i]] = initial[i + 1];
+  }
+
+  std::vector<int> forward = std::move(sister);
+  std::vector<int> backward(static_cast<std::size_t>(n + 1), 0);
+  for (int i = 1; i <= n; ++i) {
+    if (forward[i] < 0 || forward[i] > n) return std::nullopt;
+    if (forward[i] != 0) backward[forward[i]] = i;
+  }
+
+  for (int i = 1; i <= n; ++i) {
+    if (backward[i] != 0 || mother[i] == 0) continue;
+    if (mother[i] < 1 || mother[i] > n) return std::nullopt;
+    int tail = mother[i];
+    int guard = 0;
+    while (forward[tail] != 0) {
+      tail = forward[tail];
+      if (tail < 1 || tail > n || ++guard > 1000) return std::nullopt;
+    }
+    forward[tail] = i;
+    backward[i] = tail;
+  }
+
+  int current = 0;
+  for (int i = 1; i <= n; ++i) {
+    if (backward[i] == 0) {
+      current = i;
+      break;
     }
   }
-  // fullDST sim layout (our DELSIM SDST takes this path): walk the LSH chain at
-  // LDTOP-3, first SH with Q(lsh+1)!=0 -> LST at LSH-4 -> LPV at LST+1; x/y/z at
-  // LPV+5/+6/+7 (cm). Same decode as raw-nanoaod fillSimPV (PSFLUJ, skelana.car ~L7088).
+  if (current == 0) return std::nullopt;
+
+  std::vector<int> order;
+  order.reserve(static_cast<std::size_t>(n));
+  std::vector<bool> seen(static_cast<std::size_t>(n + 1), false);
+  for (int i = 0; i < n; ++i) {
+    if (current < 1 || current > n || seen[current]) return std::nullopt;
+    order.push_back(current);
+    seen[current] = true;
+    current = forward[current];
+  }
+  if (current != 0) return std::nullopt;
+  return order;
+}
+
+DecodedTruth decodeCompactTruth(const CompactSimulationBanks& banks) {
+  DecodedTruth result;
+  const int lpvs = banks.pvs;
+  const int lstsh = banks.stsh;
+  const int npvs = ph::IQ(lpvs + 1);
+  const int nsh0 = ph::IQ(lstsh + 2) / 1000;
+  const int nstsh = ph::IQ(lstsh + 3) / 1000;
+  const int nst0 = ph::IQ(lstsh + 4) / 1000;
+  const int n = nsh0 + nstsh;
+  if (npvs < 0 || nsh0 < 0 || nstsh < 0 || nst0 < 0 ||
+      n <= 0 || n >= kMaxTruthParticles) {
+    return result;
+  }
+
+  const int nwsh0 = ph::IQ(lstsh + 2) % 1000;
+  const int nwstsh = ph::IQ(lstsh + 3) % 1000;
+  const int lenhed = ph::IQ(lstsh + 1) - (nsh0 + 2 * nstsh + nst0) + 1;
+  if (nwsh0 <= 0 || nwstsh <= 0 || lenhed <= 0) return result;
+
+  std::vector<int> mother(static_cast<std::size_t>(n + 1), 0);
+  std::vector<int> sister(static_cast<std::size_t>(n + 1), 0);
+  int header = lstsh + lenhed;
+  for (int i = 1; i <= nsh0; ++i) {
+    const int packed = ph::IQ(header + i);
+    mother[i] = bitField(packed, 9, 8);
+    sister[i] = bitField(packed, 17, 8);
+  }
+  header += nsh0;
+  for (int i = 1; i <= nstsh; ++i) {
+    const int packed = ph::IQ(header + 2 * i - 1);
+    mother[nsh0 + i] = bitField(packed, 9, 8);
+    sister[nsh0 + i] = bitField(packed, 17, 8);
+  }
+
+  const auto maybeOrder = topologicalOrder(mother, std::move(sister));
+  if (!maybeOrder) return result;
+  const auto& order = *maybeOrder;
+  std::unordered_map<int, int> shToLu;
+  shToLu.reserve(order.size());
+  for (std::size_t i = 0; i < order.size(); ++i) {
+    shToLu[order[i]] = static_cast<int>(i + 1);
+  }
+
+  const int shData = lstsh + lenhed + nsh0 + 2 * nstsh + nst0;
+  const int stshData = shData + nsh0 * nwsh0;
+  result.particles.reserve(order.size());
+  for (const int shIndex : order) {
+    const bool unassociated = shIndex <= nsh0;
+    const int record = unassociated
+        ? shData + nwsh0 * (shIndex - 1)
+        : stshData + nwstsh * (shIndex - nsh0 - 1);
+
+    TruthParticle row;
+    row.status = std::lround(ph::Q(record + (unassociated ? 8 : 13))) / 10000;
+    row.pdg = std::lround(ph::Q(record + (unassociated ? 9 : 14)));
+    const auto parent = shToLu.find(mother[shIndex]);
+    row.parent = parent == shToLu.end() ? 0 : parent->second;
+    row.momentum = {ph::Q(record + 3), ph::Q(record + 4),
+                    ph::Q(record + 5)};
+    row.mass = ph::Q(record + 2);
+
+    if (!unassociated) {
+      const int packedVertex =
+          ph::IQ(lstsh + lenhed + nsh0 + 2 * (shIndex - nsh0));
+      const int vertexIndex = bitField(packedVertex, 9, 8);
+      if (vertexIndex > 0 && vertexIndex <= npvs) {
+        const int vertex = lpvs + 1 + npvs + 6 * (vertexIndex - 1);
+        row.vertex = {ph::Q(vertex + 4), ph::Q(vertex + 5),
+                      ph::Q(vertex + 6)};
+      }
+    }
+    result.particles.push_back(row);
+  }
+
+  // The first NSTSH compact ST records have an associated SH. Their downlinks
+  // point back to reconstructed PA banks; this is PSHSIM's PA -> ST -> LU map.
+  for (int st = 1; st <= nstsh; ++st) {
+    const int lpa = ph::LQ(lstsh - st);
+    const auto gen = shToLu.find(nsh0 + st);
+    if (lpa > 0 && gen != shToLu.end()) result.lpaToGen[lpa] = gen->second - 1;
+  }
+  return result;
+}
+
+DecodedTruth decodeFullTruth() {
+  DecodedTruth result;
+  if (ph::LDTOP <= 0 || ph::IQ(ph::LDTOP - 2) <= 3) return result;
+
+  std::unordered_map<int, int> originalToLu;
+  int lsh = ph::LQ(ph::LDTOP - 3);
+  while (lsh > 0 && result.particles.size() < kMaxTruthParticles) {
+    if (std::lround(ph::Q(lsh + 1)) != 0) {
+      const int lu = static_cast<int>(result.particles.size()) + 1;
+      const int original = std::lround(ph::Q(lsh + 9));
+      originalToLu[original] = lu;
+
+      TruthParticle row;
+      row.status = std::lround(ph::Q(lsh + 10)) / 10000;
+      row.pdg = std::lround(ph::Q(lsh + 11));
+      const int motherSh = ph::LQ(lsh - 2);
+      if (motherSh > 0) {
+        const auto parent = originalToLu.find(std::lround(ph::Q(motherSh + 9)));
+        if (parent != originalToLu.end()) row.parent = parent->second;
+      }
+      row.momentum = {ph::Q(lsh + 3), ph::Q(lsh + 4), ph::Q(lsh + 5)};
+      row.mass = ph::Q(lsh + 2);
+
+      const int lst = ph::LQ(lsh - 4);
+      if (lst > 0) {
+        const int lpv = ph::LQ(lst + 1);
+        if (lpv > 0) {
+          row.vertex = {ph::Q(lpv + 5), ph::Q(lpv + 6), ph::Q(lpv + 7)};
+        }
+        const int lpa = ph::LQ(lst - 2);
+        if (lpa > 0) result.lpaToGen[lpa] = lu - 1;
+      }
+      result.particles.push_back(row);
+    }
+    lsh = ph::LQ(lsh);
+  }
+  return result;
+}
+
+DecodedTruth decodeTruth() {
+  if (const auto compact = compactSimulationBanks()) {
+    return decodeCompactTruth(*compact);
+  }
+  return decodeFullTruth();
+}
+
+// Per-event MC truth interaction point (sim-PV), in mm. Used to shift the
+// generator-frame vertices onto the DELSIM/reconstruction interaction point,
+// preserving the existing converter contract.
+std::optional<std::array<double, 3>> read_sim_pv_mm() {
+  if (const auto compact = compactSimulationBanks()) {
+    const int npvs = ph::IQ(compact->pvs + 1);
+    if (npvs >= 1) {
+      const int vertex = compact->pvs + 1 + npvs;
+      return std::array<double, 3>{ph::Q(vertex + 4) * 10.0,
+                                   ph::Q(vertex + 5) * 10.0,
+                                   ph::Q(vertex + 6) * 10.0};
+    }
+  }
+  if (ph::LDTOP <= 0 || ph::IQ(ph::LDTOP - 2) <= 3) return std::nullopt;
   for (int lsh = ph::LQ(ph::LDTOP - 3); lsh > 0; lsh = ph::LQ(lsh)) {
     if (std::lround(ph::Q(lsh + 1)) == 0) continue;
     const int lst = ph::LQ(lsh - 4);
     if (lst <= 0) continue;
     const int lpv = ph::LQ(lst + 1);
     if (lpv <= 0) continue;
-    return std::array<double, 3>{ph::Q(lpv + 5) * 10.0,   // cm -> mm
+    return std::array<double, 3>{ph::Q(lpv + 5) * 10.0,
                                  ph::Q(lpv + 6) * 10.0,
                                  ph::Q(lpv + 7) * 10.0};
   }
@@ -99,73 +304,56 @@ std::optional<std::array<double, 3>> read_sim_pv_mm() {
 // ---------------------------------------------------------------------------
 void TruthGenWriter::emit() {
   GenParticleResult result;
-
-  const int nGen = unpack_lujets();
+  auto decoded = decodeTruth();
+  const int nGen = static_cast<int>(decoded.particles.size());
   edm4hep::MCParticleCollection mc;
-  result.handles.reserve(static_cast<std::size_t>(nGen));
+  result.handles.reserve(decoded.particles.size());
 
-  // Per-event frame shift (mm): re-anchor the gen-frame truth onto the
-  // DELSIM/reco frame so MCParticle vertices/endpoints line up with the
-  // reconstructed PV. The gen primary is VP(1) (the LUJETS system/event
-  // vertex; ~origin unless Beams:allowVertexSpread baked a smear into VP);
-  // the sim primary is the sim-PV bank (shortDST LDTOP-28 or fullDST
-  // LDTOP-3->LSH->LST->LPV). shift = simPV - gen_primary preserves relative
-  // displacements (e.g. the B decay length) while moving the primary into the
-  // reco frame. Gated on nGen>=1 so real data (no LUJETS) never reads sim banks
-  // -> zero shift, empty truth.
   double sx = 0.0, sy = 0.0, sz = 0.0;
   if (nGen >= 1) {
     if (auto spv = read_sim_pv_mm()) {
-      sx = (*spv)[0] - static_cast<double>(sk::VP(1, 1));
-      sy = (*spv)[1] - static_cast<double>(sk::VP(1, 2));
-      sz = (*spv)[2] - static_cast<double>(sk::VP(1, 3));
+      sx = (*spv)[0] - static_cast<double>(decoded.particles[0].vertex[0]);
+      sy = (*spv)[1] - static_cast<double>(decoded.particles[0].vertex[1]);
+      sz = (*spv)[2] - static_cast<double>(decoded.particles[0].vertex[2]);
     }
   }
 
-  // First pass: per-LU-index handle creation. KP(i,1)=status, KP(i,2)=PDG,
-  // PP(i,1..3)=p, PP(i,5)=mass, VP(i,1..3)=production vertex (mm per
-  // SKELANA A.2.5 — no unit conversion), frame-shifted by (sx,sy,sz).
-  for (int i = 1; i <= nGen; ++i) {
+  for (const auto& row : decoded.particles) {
     auto mp = mc.create();
-    mp.setPDG(sk::KP(i, 2));
-    mp.setGeneratorStatus(static_cast<std::int16_t>(sk::KP(i, 1)));
-    mp.setMomentum({sk::PP(i, 1), sk::PP(i, 2), sk::PP(i, 3)});
-    mp.setMass(sk::PP(i, 5));
-    mp.setVertex({static_cast<double>(sk::VP(i, 1)) + sx,
-                  static_cast<double>(sk::VP(i, 2)) + sy,
-                  static_cast<double>(sk::VP(i, 3)) + sz});
-    mp.setCharge(charge_from_pdg(sk::KP(i, 2)));
+    mp.setPDG(row.pdg);
+    mp.setGeneratorStatus(static_cast<std::int16_t>(row.status));
+    mp.setMomentum({row.momentum[0], row.momentum[1], row.momentum[2]});
+    mp.setMass(row.mass);
+    mp.setVertex({static_cast<double>(row.vertex[0]) + sx,
+                  static_cast<double>(row.vertex[1]) + sy,
+                  static_cast<double>(row.vertex[2]) + sz});
+    mp.setCharge(charge_from_pdg(row.pdg));
     result.handles.push_back(mp);
   }
 
-  // Second pass: parent/daughter graph (parent edges only; daughters
-  // are recoverable by reverse traversal).
-  // Endpoint (decay vertex): a decay's real daughters sit at the (possibly
-  // displaced) decay vertex, but LUJETS documentation-copy daughters (status 21)
-  // sit at the PARENT's production vertex. Pick the MOST-displaced daughter so a
-  // coincident doc-copy can't clobber a real displaced vertex -- the previous
-  // "last-daughter-wins" silently dropped ~40% of displaced B/D endpoints. A
-  // particle whose only daughters are coincident gets a zero-flight endpoint at
-  // its own vertex (correct); stable particles (no daughters) keep the default.
-  std::vector<double> best_disp2(static_cast<std::size_t>(nGen), -1.0);
-  for (int i = 1; i <= nGen; ++i) {
-    const int parent_lu = sk::KP(i, 3);
-    if (parent_lu >= 1 && parent_lu <= nGen) {
-      const std::size_t child = static_cast<std::size_t>(i - 1);
-      const std::size_t pidx  = static_cast<std::size_t>(parent_lu - 1);
-      result.handles[child].addToParents(result.handles[pidx]);
-      result.handles[pidx].addToDaughters(result.handles[child]);
-      const auto pv = result.handles[pidx].getVertex();
-      const auto cv = result.handles[child].getVertex();
-      const double dx = cv.x - pv.x, dy = cv.y - pv.y, dz = cv.z - pv.z;
-      const double d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 > best_disp2[pidx]) {
-        result.handles[pidx].setEndpoint(cv);
-        best_disp2[pidx] = d2;
-      }
+  // Parent graph and the most-displaced-daughter endpoint convention are kept
+  // identical to the previous PSCLUJ-backed writer.
+  std::vector<double> bestDisp2(decoded.particles.size(), -1.0);
+  for (int i = 0; i < nGen; ++i) {
+    const int parentLu = decoded.particles[i].parent;
+    if (parentLu < 1 || parentLu > nGen) continue;
+    const std::size_t child = static_cast<std::size_t>(i);
+    const std::size_t parent = static_cast<std::size_t>(parentLu - 1);
+    result.handles[child].addToParents(result.handles[parent]);
+    result.handles[parent].addToDaughters(result.handles[child]);
+    const auto pv = result.handles[parent].getVertex();
+    const auto cv = result.handles[child].getVertex();
+    const double dx = cv.x - pv.x;
+    const double dy = cv.y - pv.y;
+    const double dz = cv.z - pv.z;
+    const double displacement2 = dx * dx + dy * dy + dz * dz;
+    if (displacement2 > bestDisp2[parent]) {
+      result.handles[parent].setEndpoint(cv);
+      bestDisp2[parent] = displacement2;
     }
   }
 
+  result.lpa_to_gen = std::move(decoded.lpaToGen);
   put(std::move(mc), "LUJ", "GenParticles", Provenance::Derived);
   ctx_.gen_truth = std::move(result);
 }
@@ -173,35 +361,26 @@ void TruthGenWriter::emit() {
 // ---------------------------------------------------------------------------
 void TruthRecoLinkWriter::emit() {
   edm4hep::RecoMCParticleLinkCollection links;
-
-  // Need both upstream writers' outputs.
   if (!ctx_.gen_truth || !ctx_.tracking) {
-    put(std::move(links), "TBL", "RecoToGen", Provenance::Transcribed);   // emit empty + return
+    put(std::move(links), "TBL", "RecoToGen", Provenance::Transcribed);
     return;
   }
-  const auto& gen      = *ctx_.gen_truth;
+  const auto& gen = *ctx_.gen_truth;
   const auto& tracking = *ctx_.tracking;
 
-  // PSCTBL.NPA = # PA particles = VECP entries. For each VECP index j:
-  //   ist = IPAST(j)                 (ST index; 0 if no MC ancestor)
-  //   ilu = ISTLU(ist)               (LU index)
-  //   particle_idx = vecp_to_particle[j]   (-1 if Tracking dropped it)
-  const int nPA   = sk::NPA();
-  const int nGen  = static_cast<int>(gen.handles.size());
-  const auto& v2p = tracking.vecp_to_particle;
-
-  for (int j = 1; j <= nPA; ++j) {
-    if (j >= static_cast<int>(v2p.size())) break;
-    const int particle_idx = v2p[j];
-    if (particle_idx < 0) continue;
-    const int ist = sk::IPAST(j);
-    if (ist <= 0) continue;
-    const int ilu = sk::ISTLU(ist);
-    if (ilu <= 0 || ilu > nGen) continue;
+  // Iterate in VECP order to preserve the historical collection ordering.
+  // The raw LPA address then resolves through the direct simulation-bank map.
+  for (std::size_t j = 1; j < tracking.vecp_to_particle.size(); ++j) {
+    const int particle = tracking.vecp_to_particle[j];
+    if (particle < 0 ||
+        particle >= static_cast<int>(tracking.particle_lpas.size())) continue;
+    const auto found = gen.lpa_to_gen.find(tracking.particle_lpas[particle]);
+    if (found == gen.lpa_to_gen.end() || found->second < 0 ||
+        found->second >= static_cast<int>(gen.handles.size())) continue;
 
     auto link = links.create();
-    link.setFrom(tracking.particle_handles[particle_idx]);
-    link.setTo  (gen.handles[ilu - 1]);
+    link.setFrom(tracking.particle_handles[particle]);
+    link.setTo(gen.handles[found->second]);
     link.setWeight(1.0f);
   }
 

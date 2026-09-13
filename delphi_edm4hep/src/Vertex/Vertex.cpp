@@ -1,18 +1,12 @@
 // Vertex domain — implementation S4.
 //
-// Reads PSCVTX (reco PV chain + simulation PV chain), PSCBSP (beam spot),
-// PSCRV0 (Delphi-official V0), PSCPHC (photon conversions). All positions
-// converted from DELPHI cm to EDM4hep mm. Vertex-to-Particle relations are
-// collection-specific: the reco PV chain carries DELPHI's outgoing PA
-// assignment, while V0 and photon-conversion vertices carry their fitted
-// daughters.
+// Reads the raw reco/simulation PV chains, reconstructed-V0 bank and photon
+// conversion links plus the direct beamspot state. All positions are converted
+// from DELPHI cm to EDM4hep mm. No SKELANA standard COMMON is required.
 
 #include "delphi_edm4hep/Vertex/Vertex.h"
 
-#include "skelana/pscbsp.hpp"
-#include "skelana/pscphc.hpp"
-#include "skelana/pscrv0.hpp"
-#include "skelana/pscvtx.hpp"
+#include "delphi_edm4hep/Event/EventInfo.h"
 
 #include "phdst/uxcom.hpp"   // ph::LQ, ph::IQ, ph::Q  (raw ZEBRA store)
 #include "phdst/uxlink.hpp"  // ph::LDTOP
@@ -24,13 +18,13 @@
 #include <podio/Frame.h>
 #include <podio/UserDataCollection.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-namespace sk = skelana;
 namespace ph = phdst;
 
 namespace delphi_edm4hep::vertex {
@@ -55,9 +49,10 @@ constexpr int kAlgoSimulation = 4;
 constexpr int kAlgoV0         = 10;
 constexpr int kAlgoPhotonConv = 11;
 
-// DELPHI PSCVTX/LPV status bits (KVTX(17,j) / IQ(lpv)). Bit 1 marks a
-// dummy vertex and bit 2 a secondary vertex. A dummy first slot is the
-// unfitted beam-spot bucket and must never be published as the event PV.
+// DELPHI LPV status bits from IQ(lpv). Bit 1 marks a dummy vertex and bit 2 a
+// secondary vertex. A dummy first slot is the unfitted beam-spot bucket and
+// must never be published as the event PV. PSHVTX retained the low five bits,
+// so the direct decoder deliberately applies the same mask.
 constexpr std::int32_t kStatusDummy     = 0x01;
 constexpr std::int32_t kStatusSecondary = 0x02;
 constexpr int kMaxRecoVertices = 150;  // DELPHI NVTXMX cap
@@ -72,30 +67,9 @@ static_assert(!isPrimaryRecoVertex(true, kStatusDummy));
 static_assert(!isPrimaryRecoVertex(true, kStatusSecondary));
 static_assert(!isPrimaryRecoVertex(false, 0));
 
-// Fill the geometric content of a Vertex from PSCVTX entry j. Pulls
-// position (cm->mm), covariance (cm^2 -> mm^2), chi^2, and ndf.
-void fillFromPSCVTX(edm4hep::MutableVertex vtx, int j) {
-  vtx.setPosition({
-    static_cast<float>(sk::QVTX(6, j) * kCm2Mm),
-    static_cast<float>(sk::QVTX(7, j) * kCm2Mm),
-    static_cast<float>(sk::QVTX(8, j) * kCm2Mm),
-  });
-  vtx.setChi2(sk::QVTX(9, j));
-  vtx.setNdf (sk::KVTX(4, j));
-  vtx.setCovMatrix({
-    sk::QVTX(10, j) * kCm2Mm2_f,   // XX
-    sk::QVTX(11, j) * kCm2Mm2_f,   // XY
-    sk::QVTX(12, j) * kCm2Mm2_f,   // YY
-    sk::QVTX(13, j) * kCm2Mm2_f,   // XZ
-    sk::QVTX(14, j) * kCm2Mm2_f,   // YZ
-    sk::QVTX(15, j) * kCm2Mm2_f,   // ZZ
-  });
-}
-
 // Fill a Vertex from the raw ZEBRA vertex bank at offset lpv (the
-// LQ(LDTOP-1) chain). This is the DELANA reco PV chain used whenever the
-// SKELANA PSCVTX primary slot is unavailable. Layout mirrors
-// delphi-raw-nanoaod's fillVtx: Q(lpv+5..7) = position cm,
+// LQ(LDTOP-1) chain). Layout mirrors delphi-raw-nanoaod's fillVtx:
+// Q(lpv+5..7) = position cm,
 // Q(lpv+8) = chi2, IQ(lpv+3) = ndf, Q(lpv+9..14) = error matrix.
 void fillFromLDTOP(edm4hep::MutableVertex vtx, int lpv) {
   vtx.setPosition({
@@ -115,11 +89,14 @@ void fillFromLDTOP(edm4hep::MutableVertex vtx, int lpv) {
   });
 }
 
-// Does PSCVTX carry a geometrically usable first slot? SKELANA can populate
-// this common for both data and MC; the -999 cm sentinel selects the raw
-// ZEBRA-chain fallback. Dummy status is handled separately below.
-bool pscvtxPrimaryUsable() {
-  return sk::NVTX >= 1 && sk::QVTX(6, 1) > -990.0f;
+void fillSimulationVertex(edm4hep::MutableVertex vtx, int lpv, bool compact) {
+  const int xyz = compact ? lpv + 4 : lpv + 5;
+  vtx.setPosition({ph::Q(xyz) * static_cast<float>(kCm2Mm),
+                   ph::Q(xyz + 1) * static_cast<float>(kCm2Mm),
+                   ph::Q(xyz + 2) * static_cast<float>(kCm2Mm)});
+  vtx.setChi2(0.f);
+  vtx.setNdf(0);
+  vtx.setCovMatrix({0.f, 0.f, 0.f, 0.f, 0.f, 0.f});
 }
 
 }  // namespace
@@ -151,90 +128,59 @@ void VertexWriter::emit()
   edm4hep::VertexCollection             v0Col;
   edm4hep::VertexCollection             phcCol;
 
-  // Helper: attach a VECP-indexed Particle to a Vertex via addToParticles.
-  // Silently no-ops if the VECP entry is out of range or has no matching
-  // emitted Particle.
-  auto add_particle_by_vecp = [&](edm4hep::MutableVertex vtx, int vecp_idx) {
-    const auto& map = tracking.vecp_to_particle;
-    if (vecp_idx < 1 || vecp_idx >= static_cast<int>(map.size())) return;
-    const int p_idx = map[vecp_idx];
-    if (p_idx < 0) return;
-    vtx.addToParticles(tracking.particle_handles[p_idx]);
+  auto add_particle_by_lpa = [&](edm4hep::MutableVertex vtx, int lpa) {
+    const auto found = tracking.lpa_to_particle.find(lpa);
+    if (found == tracking.lpa_to_particle.end()) return;
+    vtx.addToParticles(tracking.particle_handles[found->second]);
   };
 
-  // Reco vertices captured in creation order (== LPV-chain order on both the
-  // PSCVTX and LDTOP paths) + a handle to the standalone PrimaryVertex copy,
-  // so the per-vertex outgoing-particle assignments can be wired in after
+  // Reco vertices captured in LPV-chain order plus a handle to the standalone
+  // PrimaryVertex copy, so outgoing-particle assignments can be wired after
   // creation.
   std::vector<edm4hep::MutableVertex> recoVtx;
   edm4hep::MutableVertex pvHandle{};
   bool havePvHandle = false;
 
-  // ----- Reconstructed PV chain (PSCVTX entries 1..NVTX) -----
+  // ----- Reconstructed PV chain -----
   // Convention: entry j=1 is the primary vertex unless status bit 1 (dummy)
   // or bit 2 (secondary) is set. The full chain, including dummy entries, is
   // also emitted into `Vertices` with the raw per-entry status bits.
   //
-  // PXTAG D⁰/D±/Dₛ-candidate bits (5+) in IQ(LPV) per dst_content.txt
-  // p.3 are preserved verbatim in the `Vertices_StatusBits` UserData
-  // — no semantic interpretation done here. Consumers needing the
-  // per-vertex flavour-tag flags read them off the raw int32.
+  // As in PSHVTX, only IQ(LPV)'s low five vertex-status bits are published;
+  // higher PXTAG candidate bits are outside this collection's contract.
   // Primary-vertex position in DELPHI cm, captured for the d0PV/z0PV
   // impact computation below. Stays sentinel if no usable PV is found.
   double pv_x_cm = -999.0, pv_y_cm = -999.0, pv_z_cm = -999.0;
   bool   have_pv = false;
 
-  if (pscvtxPrimaryUsable()) {
-    // Use the SKELANA common when its first slot is geometrically available.
-    for (int j = 1; j <= sk::NVTX; ++j) {
-      const std::int32_t status = sk::KVTX(17, j);
-      const bool is_primary = isPrimaryRecoVertex(j == 1, status);
+  int lpv = (ph::LDTOP > 0) ? ph::LQ(ph::LDTOP - 1) : 0;
+  int count = 0;
+  while (lpv > 0 && count < kMaxRecoVertices) {
+    // PSHVTX retained only the low five status bits in KVTX(17,*).
+    const std::int32_t status = ph::IQ(lpv) & 0x1f;
+    const bool is_primary = isPrimaryRecoVertex(count == 0, status);
 
-      auto vtx = vtxCol.create();
-      vtx.setPrimary(is_primary);
-      vtx.setAlgorithmType(is_primary ? kAlgoPrimary : kAlgoNonPrimaryReco);
-      fillFromPSCVTX(vtx, j);
-      statusBits.push_back(status);
-      recoVtx.push_back(vtx);
+    auto vtx = vtxCol.create();
+    vtx.setPrimary(is_primary);
+    vtx.setAlgorithmType(is_primary ? kAlgoPrimary : kAlgoNonPrimaryReco);
+    fillFromLDTOP(vtx, lpv);
+    statusBits.push_back(status);
+    recoVtx.push_back(vtx);
 
-      if (is_primary) {
-        auto pv = pvCol.create();
-        pv.setPrimary(true);
-        pv.setAlgorithmType(kAlgoPrimary);
-        fillFromPSCVTX(pv, j);
-        pv_x_cm = sk::QVTX(6, j); pv_y_cm = sk::QVTX(7, j); pv_z_cm = sk::QVTX(8, j);
-        have_pv = true;
-        pvHandle = pv; havePvHandle = true;
-      }
+    if (is_primary) {
+      auto pv = pvCol.create();
+      pv.setPrimary(true);
+      pv.setAlgorithmType(kAlgoPrimary);
+      fillFromLDTOP(pv, lpv);
+      pv_x_cm = ph::Q(lpv + 5);
+      pv_y_cm = ph::Q(lpv + 6);
+      pv_z_cm = ph::Q(lpv + 7);
+      have_pv = true;
+      pvHandle = pv;
+      havePvHandle = true;
     }
-  } else {
-    // PSCVTX is unavailable: read the DELANA reco vertex chain straight from
-    // the raw ZEBRA store at LQ(LDTOP-1).
-    int lpv = (ph::LDTOP > 0) ? ph::LQ(ph::LDTOP - 1) : 0;
-    int count = 0;
-    while (lpv > 0 && count < kMaxRecoVertices) {
-      const std::int32_t status = ph::IQ(lpv);
-      const bool is_primary = isPrimaryRecoVertex(count == 0, status);
-
-      auto vtx = vtxCol.create();
-      vtx.setPrimary(is_primary);
-      vtx.setAlgorithmType(is_primary ? kAlgoPrimary : kAlgoNonPrimaryReco);
-      fillFromLDTOP(vtx, lpv);
-      statusBits.push_back(status);
-      recoVtx.push_back(vtx);
-
-      if (is_primary) {
-        auto pv = pvCol.create();
-        pv.setPrimary(true);
-        pv.setAlgorithmType(kAlgoPrimary);
-        fillFromLDTOP(pv, lpv);
-        pv_x_cm = ph::Q(lpv + 5); pv_y_cm = ph::Q(lpv + 6); pv_z_cm = ph::Q(lpv + 7);
-        have_pv = true;
-        pvHandle = pv; havePvHandle = true;
-      }
-      ++count;
-      lpv = ph::LQ(lpv);
-    }
+    ++count;
+    lpv = ph::LQ(lpv);
   }
 
   // ----- Wire each reco vertex -> its outgoing-particle assignment -----
@@ -255,7 +201,7 @@ void VertexWriter::emit()
     }
     if (lpvChain.size() != recoVtx.size()) {
       throw std::runtime_error(
-          "PSCVTX/reco vertex count does not match the raw LPV chain; "
+          "reco vertex count does not match the raw LPV chain; "
           "refusing to attach outgoing particles by ordinal");
     }
     for (std::size_t vi = 0; vi < lpvChain.size(); ++vi) {
@@ -270,47 +216,54 @@ void VertexWriter::emit()
     }
   }
 
-  // ----- Simulation PV (PSCVTX sim region: first entry only) -----
-  // PSCVTX stores reco at 1..NVTXMX and simulation at NVTXMX+1..2*NVTXMX.
-  // Only the FIRST sim slot (NVTXMX+1) is reliable: it is the true IP
-  // (verified -- matches the MCParticle primary in 158/160 mumu/qq/bb
-  // events). NVTXMC over-counts on our DELSIM SDST, so slots 2..NVTXMC read
-  // uninitialised memory (monotonically growing, non-physical positions with
-  // no MCParticle counterpart) -- we must NOT emit those. Real simulation
-  // DECAY vertices live in sDST_LUJ_GenParticles (the reliable truth record).
-  if (sk::NVTXMC >= 1) {
-    const int j = sk::NVTXMX + 1;
+  // ----- Simulation PV (first raw simulation vertex only) -----
+  // Real decay vertices live in LUJ_GenParticles; only the interaction point
+  // belongs in this reconstructed-vertex collection.
+  int simPv = 0;
+  bool compactSimPv = false;
+  std::int32_t simStatus = 0;
+  if (ph::LDTOP > 0 && ph::IQ(ph::LDTOP - 2) > 28) {
+    const int lpvs = ph::LQ(ph::LDTOP - 28);
+    if (lpvs > 0 && ph::IQ(lpvs + 1) > 0) {
+      const int npvs = ph::IQ(lpvs + 1);
+      simPv = lpvs + 1 + npvs;
+      compactSimPv = true;
+      simStatus = (ph::IQ(simPv + 2) >> 9) & 0xf;
+    }
+  }
+  if (simPv == 0 && ph::LDTOP > 0) simPv = ph::LQ(ph::LDTOP - 2);
+  if (simPv > 0) {
     auto vtx = vtxCol.create();
     vtx.setPrimary(false);
     vtx.setAlgorithmType(kAlgoSimulation);
-    fillFromPSCVTX(vtx, j);
-    statusBits.push_back(sk::KVTX(17, j));
+    fillSimulationVertex(vtx, simPv, compactSimPv);
+    statusBits.push_back(simStatus);
   }
 
-  // ----- Beam spot (PSCBSP) -----
+  // ----- Beam spot (direct VD package result) -----
   {
+    const auto& beamSpot = event::current().beamSpot;
     auto bs = bspCol.create();
     bs.setPrimary(false);
     bs.setAlgorithmType(kAlgoBeamSpot);
     bs.setPosition({
-      sk::XYZBS(1) * static_cast<float>(kCm2Mm),
-      sk::XYZBS(2) * static_cast<float>(kCm2Mm),
-      sk::XYZBS(3) * static_cast<float>(kCm2Mm),
+      beamSpot.positionCm[0] * static_cast<float>(kCm2Mm),
+      beamSpot.positionCm[1] * static_cast<float>(kCm2Mm),
+      beamSpot.positionCm[2] * static_cast<float>(kCm2Mm),
     });
-    // PSCBSP stores per-axis sigmas; we diagonalise (no off-diag info).
+    // VDBSPT returns per-axis sigmas; we diagonalise (no off-diag info).
     bs.setCovMatrix({
-      sk::DXYZBS(1) * sk::DXYZBS(1) * kCm2Mm2_f,   // XX
-      0.f,                                          // XY
-      sk::DXYZBS(2) * sk::DXYZBS(2) * kCm2Mm2_f,   // YY
-      0.f,                                          // XZ
-      0.f,                                          // YZ
-      sk::DXYZBS(3) * sk::DXYZBS(3) * kCm2Mm2_f,   // ZZ
+      beamSpot.sigmaCm[0] * beamSpot.sigmaCm[0] * kCm2Mm2_f,  // XX
+      0.f,                                                       // XY
+      beamSpot.sigmaCm[1] * beamSpot.sigmaCm[1] * kCm2Mm2_f,  // YY
+      0.f,                                                       // XZ
+      0.f,                                                       // YZ
+      beamSpot.sigmaCm[2] * beamSpot.sigmaCm[2] * kCm2Mm2_f,  // ZZ
     });
   }
 
-  // ----- Delphi-official V0 candidates (PSCRV0) -----
-  // QRV0(8..10) = vertex (X, Y, Z) in cm; KRV0(1..2) = VECP indices of
-  // the two daughters. Surface DELPHI's own V0 classification + the
+  // ----- Delphi-official V0 candidates (raw LDTOP link 22) -----
+  // Surface DELPHI's own V0 classification + the
   // fitted V0 quantities via Vertex.parameters so analyses can select
   // K0/Λ without re-deriving them — without these the collection is
   // just the LOOSE candidate list (S/B ~ 0.9; cutting tag→K0/Λ gives
@@ -324,42 +277,93 @@ void VertexWriter::emit()
   //   [3] chi2 probability QRV0(7) (PXFVTX fit)
   //   [4] xy flight distance / error QRV0(11)
   //   [5] xy pointing angle to PV QRV0(12) (rad)
-  for (int i = 1; i <= sk::NRV0; ++i) {
-    auto v0 = v0Col.create();
-    v0.setPrimary(false);
-    v0.setAlgorithmType(kAlgoV0);
-    v0.setPosition({
-      sk::QRV0(8,  i) * static_cast<float>(kCm2Mm),
-      sk::QRV0(9,  i) * static_cast<float>(kCm2Mm),
-      sk::QRV0(10, i) * static_cast<float>(kCm2Mm),
-    });
-    v0.addToParameters(static_cast<float>(sk::KRV0(5, i)));  // tag
-    v0.addToParameters(sk::QRV0(19, i));                     // suggested mass
-    v0.addToParameters(sk::QRV0(6,  i));                     // |p|
-    v0.addToParameters(sk::QRV0(7,  i));                     // chi2 prob
-    v0.addToParameters(sk::QRV0(11, i));                     // flight/err
-    v0.addToParameters(sk::QRV0(12, i));                     // pointing angle
-    // PSCRV0 doesn't carry a per-V0 cov matrix in the same docs-aligned
-    // slots that PSCVTX does (QRV0(24..33) is the V0 weight matrix in a
-    // different basis — flagged for follow-up).
-    add_particle_by_vecp(v0, sk::KRV0(1, i));
-    add_particle_by_vecp(v0, sk::KRV0(2, i));
+  if (ph::LDTOP > 0 && ph::IQ(ph::LDTOP - 2) >= 22) {
+    const int bank = ph::LQ(ph::LDTOP - 22);
+    if (bank > 0) {
+      const int n = ph::IQ(bank + 1);
+      int data = 1;
+      const int version = event::current().dstVersion;
+      const int pxdstVersion = ph::IQ(ph::LDTOP + 3);
+      for (int i = 1; i <= n; ++i) {
+        const std::int32_t header =
+            static_cast<std::int32_t>(std::lround(ph::Q(bank + data + 1)));
+        int recordWords = 15;
+        int hypotheses = 0;
+        std::int32_t tag = 0;
+        if (version >= 102 || pxdstVersion >= 330) {
+          recordWords = header & 0x3ff;
+          hypotheses = (header >> 10) & 0xf;
+          tag = (header >> 14) & 0x3f;
+        } else {
+          recordWords = header / 1000;
+          tag = header % 1000;
+        }
+
+        auto v0 = v0Col.create();
+        v0.setPrimary(false);
+        v0.setAlgorithmType(kAlgoV0);
+        v0.setPosition({ph::Q(bank + data + 4) * static_cast<float>(kCm2Mm),
+                        ph::Q(bank + data + 5) * static_cast<float>(kCm2Mm),
+                        ph::Q(bank + data + 6) * static_cast<float>(kCm2Mm)});
+        v0.addToParameters(static_cast<float>(tag));
+        v0.addToParameters(ph::Q(bank + data + 15));  // suggested mass
+        v0.addToParameters(ph::Q(bank + data + 2));   // |p|
+        v0.addToParameters(ph::Q(bank + data + 3));   // chi2 probability
+        v0.addToParameters(ph::Q(bank + data + 7));   // flight/error
+        v0.addToParameters(ph::Q(bank + data + 8));   // pointing angle
+        add_particle_by_lpa(v0, ph::LQ(bank - 2 * i + 1));
+        add_particle_by_lpa(v0, ph::LQ(bank - 2 * i));
+
+        data += 15;
+        if (version <= 102) {
+          for (int h = 0; h < hypotheses; ++h) {
+            const auto hypothesisHeader = static_cast<std::int32_t>(
+                std::lround(ph::Q(bank + data + 1)));
+            data += hypothesisHeader & 0x3ff;
+          }
+        } else {
+          data += std::max(recordWords - 15, 0);
+        }
+      }
+    }
   }
 
-  // ----- Photon conversions (PSCPHC) -----
-  // QPHOC(10..12) = conversion (X, Y, Z) in cm; KPHOC(1..2) = VECP
-  // indices of the e+/e- daughters.
-  for (int i = 1; i <= sk::NPHOC; ++i) {
-    auto phc = phcCol.create();
-    phc.setPrimary(false);
-    phc.setAlgorithmType(kAlgoPhotonConv);
-    phc.setPosition({
-      sk::QPHOC(10, i) * static_cast<float>(kCm2Mm),
-      sk::QPHOC(11, i) * static_cast<float>(kCm2Mm),
-      sk::QPHOC(12, i) * static_cast<float>(kCm2Mm),
-    });
-    add_particle_by_vecp(phc, sk::KPHOC(1, i));
-    add_particle_by_vecp(phc, sk::KPHOC(2, i));
+  // ----- Photon conversions -----
+  if (event::current().dstVersion >= 103) {
+    for (int parent = ph::LDTOP > 0 ? ph::LQ(ph::LDTOP - 1) : 0;
+         parent > 0; parent = ph::LQ(parent)) {
+      for (int photon = ph::LQ(parent - 1); photon > 0;
+           photon = ph::LQ(photon)) {
+        const int conversion = ph::LQ(photon - 1);
+        const int code = (ph::IQ(photon + 3) >> 18) & 0x7f;
+        if (conversion <= 0 || code < 21 || code > 24) continue;
+        auto phc = phcCol.create();
+        phc.setPrimary(false);
+        phc.setAlgorithmType(kAlgoPhotonConv);
+        phc.setPosition({ph::Q(conversion + 5) * static_cast<float>(kCm2Mm),
+                         ph::Q(conversion + 6) * static_cast<float>(kCm2Mm),
+                         ph::Q(conversion + 7) * static_cast<float>(kCm2Mm)});
+        const int first = ph::LQ(conversion - 1);
+        add_particle_by_lpa(phc, first);
+        if (first > 0) add_particle_by_lpa(phc, ph::LQ(first));
+      }
+    }
+  } else if (ph::LDTOP > 0 && ph::IQ(ph::LDTOP - 2) >= 24) {
+    const int bank = ph::LQ(ph::LDTOP - 24);
+    if (bank > 0) {
+      const int n = ph::IQ(bank + 1);
+      int data = 1;
+      for (int i = 1; i <= n; ++i, data += 9) {
+        auto phc = phcCol.create();
+        phc.setPrimary(false);
+        phc.setAlgorithmType(kAlgoPhotonConv);
+        phc.setPosition({ph::Q(bank + data + 7) * static_cast<float>(kCm2Mm),
+                         ph::Q(bank + data + 8) * static_cast<float>(kCm2Mm),
+                         ph::Q(bank + data + 9) * static_cast<float>(kCm2Mm)});
+        add_particle_by_lpa(phc, ph::LQ(bank - 3 * i + 2));
+        add_particle_by_lpa(phc, ph::LQ(bank - 3 * i + 1));
+      }
+    }
   }
 
   // ----- Per-track impact parameters w.r.t. the primary vertex -----

@@ -34,6 +34,9 @@
 #   DelphiAL9::fortran_group   INTERFACE; the full --start-group/--end-group linker
 #                              list, with -L paths set. Bring in gfortran/dl/m/z/crypt
 #                              yourself.
+#   DelphiAL9::fortran_group_no_skelana
+#                              same DELPHI group without libskelanaxx, for
+#                              direct-reader executables.
 #
 # Sets DelphiAL9_FOUND if the headers + one canonical archive per lib dir
 # (libphdstxx.a, libpacklib.a) are present.
@@ -159,6 +162,17 @@ if(DelphiAL9_FOUND)
     )
     target_link_libraries(DelphiAL9::fortran_group INTERFACE
       "$<LINK_GROUP:RESCAN,phdstxx,skelanaxx,dstanaxx,pxdstxx,vfclapxx,vdclapxx,ufieldxx,bsaurusxx,herlibxx,triggerxx,uhlibxx,mathlib,packlib,kernlib,ariadne,herwig59,jetset74>"
+    )
+  endif()
+
+  if(NOT TARGET DelphiAL9::fortran_group_no_skelana)
+    add_library(DelphiAL9::fortran_group_no_skelana INTERFACE IMPORTED)
+    target_link_directories(DelphiAL9::fortran_group_no_skelana INTERFACE
+      "${DELPHI_AL9_LIB_DIR}"
+      "${CERN_AL9_LIB_DIR}"
+    )
+    target_link_libraries(DelphiAL9::fortran_group_no_skelana INTERFACE
+      "$<LINK_GROUP:RESCAN,phdstxx,dstanaxx,pxdstxx,vfclapxx,vdclapxx,ufieldxx,bsaurusxx,herlibxx,triggerxx,uhlibxx,mathlib,packlib,kernlib,ariadne,herwig59,jetset74>"
     )
   endif()
 endif()

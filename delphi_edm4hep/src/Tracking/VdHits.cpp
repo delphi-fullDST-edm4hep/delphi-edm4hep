@@ -1,85 +1,134 @@
-// VdHitsWriter — pass-1 implementation.
+// VdHitsWriter — direct compact shortDST VD-hit decoding.
 //
-// PSCVDU: NVDUN unassociated hits, KVDUN/QVDUN(i, n), i=1..5.
-// PSCVDA: per track j (1..MTRACK) NASHT(j) hits, KVDAS/QVDAS(i, j, n).
-// Field i: 1=module#(sign of Z), 2=localX/Z, 3=R(−R if R-Z), 4=RPhi/Z,
-// 5=signal/noise. Position kept cylindrical-mixed (R, slot2, slot4)×10mm.
+// The MVDH bank at LDTOP-21 contains associated hits first (one PA reference
+// downlink per hit), followed by unassociated hits. This is the source used by
+// PSHVDH; decoding it here removes PSCVDA, PSCVDU and PSCVEC from this domain.
 
 #include "delphi_edm4hep/Tracking/VdHits.h"
 
-#include <algorithm>
+#include "delphi_edm4hep/internal/PaWalk.h"
 
-#include "skelana/pscvda.hpp"
-#include "skelana/pscvdu.hpp"
-#include "skelana/pscvec.hpp"   // NCVECP (charged-track count)
+#include "phdst/uxcom.hpp"
+#include "phdst/uxlink.hpp"
 
 #include <edm4hep/MutableTrackerHit3D.h>
 #include <edm4hep/TrackerHit3DCollection.h>
-#include <podio/UserDataCollection.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <unordered_map>
+#include <vector>
 
-namespace sk = skelana;
+namespace ph = phdst;
 
 namespace delphi_edm4hep::vd_hits {
 
 namespace {
-constexpr double kCm2Mm = 10.0;
 
-// Fill a TrackerHit3D from the 5 VD-hit fields (module#, slot2, R, slot4,
-// S/N). Position is the cylindrical-mixed (R, slot2, slot4) triple ×10mm.
-void fillHit(edm4hep::MutableTrackerHit3D hit,
-             int module_signed, float slot2, float R, float slot4, float sn) {
-  hit.setCellID(static_cast<std::uint64_t>(
-                  static_cast<std::int64_t>(module_signed)));
-  hit.setType(R < 0.f ? 1 : 0);          // R-Z measurement flag
-  hit.setEDep(sn);                        // signal/noise (no dedicated slot)
-  hit.setPosition({ R * kCm2Mm, slot2 * kCm2Mm, slot4 * kCm2Mm });
+constexpr double kCm2Mm = 10.0;
+constexpr int kMaxHitsPerTrack = 12;
+constexpr int kMaxUnassociatedHits = 1000;
+
+struct RawHit {
+  int module = 0;
+  float slot2 = 0.f;
+  float radius = 0.f;
+  float slot4 = 0.f;
+  float signalToNoise = 0.f;
+};
+
+RawHit readHit(int bank, int dataOffset, int wordsPerHit) {
+  RawHit hit;
+  hit.module = std::lround(ph::Q(bank + dataOffset + 1));
+  hit.slot2 = ph::Q(bank + dataOffset + 2);
+  hit.radius = ph::Q(bank + dataOffset + 3);
+  hit.slot4 = ph::Q(bank + dataOffset + 4);
+  if (wordsPerHit > 4) hit.signalToNoise = ph::Q(bank + dataOffset + 5);
+  return hit;
 }
+
+void fillHit(edm4hep::MutableTrackerHit3D hit, const RawHit& raw) {
+  hit.setCellID(static_cast<std::uint64_t>(
+      static_cast<std::int64_t>(raw.module)));
+  hit.setType(raw.radius < 0.f ? 1 : 0);
+  hit.setEDep(raw.signalToNoise);
+  hit.setPosition({raw.radius * kCm2Mm, raw.slot2 * kCm2Mm,
+                   raw.slot4 * kCm2Mm});
+}
+
 }  // namespace
 
-void VdHitsWriter::emit()
-{
-  edm4hep::TrackerHit3DCollection pointsCol;   // PSCVDU, unassociated
-  edm4hep::TrackerHit3DCollection hitsCol;     // PSCVDA, associated
+void VdHitsWriter::emit() {
+  edm4hep::TrackerHit3DCollection pointsCol;
+  edm4hep::TrackerHit3DCollection hitsCol;
   Output out;
 
-  // ---- Unassociated (PSCVDU) ----
-  for (int n = 1; n <= sk::NVDUN; ++n) {
-    fillHit(pointsCol.create(),
-            sk::KVDUN(sk::IVDUMOD, n), sk::QVDUN(sk::IVDUXLC, n),
-            sk::QVDUN(sk::IVDURCO, n), sk::QVDUN(sk::IVDURPH, n),
-            sk::QVDUN(sk::IVDUSTN, n));
+  if (ph::LDTOP <= 0 || ph::IQ(ph::LDTOP - 2) <= 21) {
+    put(std::move(pointsCol), "TDVD", "VDPoints", Provenance::Transcribed);
+    put(std::move(hitsCol), "TDVD", "VDHits", Provenance::Transcribed);
+    ctx_.vd_hits = std::move(out);
+    return;
+  }
+  const int bank = ph::LQ(ph::LDTOP - 21);
+  if (bank <= 0) {
+    put(std::move(pointsCol), "TDVD", "VDPoints", Provenance::Transcribed);
+    put(std::move(hitsCol), "TDVD", "VDHits", Provenance::Transcribed);
+    ctx_.vd_hits = std::move(out);
+    return;
   }
 
-  // ---- Associated (PSCVDA), per charged track j ----
-  // Hits are grouped by the SKELANA charged-track ordinal and handed to
-  // TrackingWriter, which links them onto the track built from the same
-  // ordinal. Keying by the ordinal rather than by an emitted-particle index
-  // is what lets this run BEFORE the track writer: a track is only mutable
-  // while its own writer holds it.
-  //
-  // PSCVDA is per CHARGED track; bound j to the charged-track count (NCVECP),
-  // not the MTRACK array maximum -- stale NASHT slots past the populated
-  // tracks would otherwise emit hits belonging to nothing. The inner loop
-  // clamps to NHIT.
-  const int ntrk = std::min(sk::NCVECP, static_cast<int>(skelana::MTRACK));
-  out.vecp_to_hits.assign(static_cast<std::size_t>(std::max(0, ntrk) + 1), {});
-  for (int j = 1; j <= ntrk; ++j) {
-    const int nhit = sk::NASHT(j);
-    if (nhit <= 0) continue;
-    for (int n = 1; n <= nhit && n <= sk::NHIT; ++n) {
-      auto hit = hitsCol.create();
-      fillHit(hit,
-              sk::KVDAS(sk::IVDAMOD, j, n), sk::QVDAS(sk::IVDAXLC, j, n),
-              sk::QVDAS(sk::IVDARCO, j, n), sk::QVDAS(sk::IVDARPH, j, n),
-              sk::QVDAS(sk::IVDASTN, j, n));
-      out.vecp_to_hits[static_cast<std::size_t>(j)].push_back(hit);
+  const int descriptor = ph::IQ(bank + 1);
+  int totalHits = descriptor % 1000;
+  int wordsPerHit = descriptor / 1000;
+  if (descriptor == 5000) {
+    totalHits = 1000;
+    wordsPerHit = 4;
+  } else if (descriptor == 6000) {
+    totalHits = 1000;
+    wordsPerHit = 5;
+  }
+  if (totalHits < 0 || wordsPerHit < 4) totalHits = 0;
+  const int associatedHits =
+      std::clamp(ph::IQ(bank - 3), 0, totalHits);
+
+  std::unordered_map<int, std::vector<RawHit>> associatedByPa;
+  int dataOffset = 1;
+  for (int n = 1; n <= associatedHits; ++n) {
+    const int lpa = ph::LQ(bank - n);
+    if (lpa > 0) {
+      auto& hits = associatedByPa[lpa];
+      if (hits.size() < static_cast<std::size_t>(kMaxHitsPerTrack)) {
+        hits.push_back(readHit(bank, dataOffset, wordsPerHit));
+      }
     }
+    dataOffset += wordsPerHit;
+  }
+
+  // PSHVDH stores hits per VECP entry and the old writer emitted those groups
+  // in charged-PA order. Walking the raw PA chain and selecting only addresses
+  // present in the hit bank gives the same stable grouping without PSCVEC.
+  pawalk::forEachPA([&](int lpa, int /*paIndex*/) {
+    const auto found = associatedByPa.find(lpa);
+    if (found == associatedByPa.end()) return;
+    auto& outputHits = out.lpa_to_hits[lpa];
+    outputHits.reserve(found->second.size());
+    for (const auto& raw : found->second) {
+      auto hit = hitsCol.create();
+      fillHit(hit, raw);
+      outputHits.push_back(hit);
+    }
+  });
+
+  const int unassociated =
+      std::min(totalHits - associatedHits, kMaxUnassociatedHits);
+  for (int i = 0; i < unassociated; ++i) {
+    fillHit(pointsCol.create(), readHit(bank, dataOffset, wordsPerHit));
+    dataOffset += wordsPerHit;
   }
 
   put(std::move(pointsCol), "TDVD", "VDPoints", Provenance::Transcribed);
-  put(std::move(hitsCol),   "TDVD", "VDHits", Provenance::Transcribed);
+  put(std::move(hitsCol), "TDVD", "VDHits", Provenance::Transcribed);
   ctx_.vd_hits = std::move(out);
 }
 

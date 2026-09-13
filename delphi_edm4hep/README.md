@@ -13,8 +13,12 @@ three command-line tools, organised as a two-pass pipeline.
 - A standalone post-processing tool derives a per-run beamspot from the
   reconstructed primary vertices.
 
+Both production passes decode event content without SKELANA and do not link
+`libskelanaxx`. A non-installed PSBEG oracle can be built explicitly with
+`-DDELPHI_BUILD_SKELANA_REFERENCE=ON` for migration comparisons.
+
 Collection names follow `<source>_<BANK>_<ReadableName>`, where `<source>`
-is `sDST` or `fDST`, `<BANK>` is the DELPHI PA-module or SKELANA-common
+is `sDST` or `fDST`, `<BANK>` is a DELPHI PA-module or historical analysis
 mnemonic, and `<ReadableName>` uses DELPHI terminology. Positions are in
 **mm**, momenta/energy in **GeV**, times in **ns**, angles in **rad**.
 
@@ -36,7 +40,8 @@ mnemonic, and `<ReadableName>` uses DELPHI terminology. Positions are in
   fails immediately if no stack is sourced at all, and prints the exact
   commands to run (`-DKEY4HEP_STACK_REQUIRED=OFF` to build against an
   EDM4hep/podio provided some other way).
-- The DELPHI almalinux-9 Fortran libraries (PHDST / SKELANA / DSTANA …),
+- The DELPHI almalinux-9 Fortran libraries (PHDST / DSTANA and detector
+  packages),
   located by `cmake/FindDelphiAL9.cmake`. Source the DELPHI environment
   (`source /cvmfs/delphi.cern.ch/setup.sh`) **before configuring**: the find
   module pins the library directories from `$DELPHI_LIB` / `$CERN_LIB`,
@@ -44,7 +49,8 @@ mnemonic, and `<ReadableName>` uses DELPHI terminology. Positions are in
   later `latest` bump can't silently change or break the build. Without the
   env it falls back to discovery under `-DDELPHI_AL9_ROOT`; override the pins
   directly with `-DDELPHI_AL9_LIB_DIR=...` / `-DCERN_AL9_LIB_DIR=...`.
-- The `delphi-analysis` C++ wrapper headers (`phdst/*.hpp`, `skelana/*.hpp`)
+- The `delphi-analysis` C++ wrapper headers (`phdst/*.hpp`; `skelana/*.hpp`
+  is used only by the optional validation-oracle targets)
   are vendored in-tree (`extern/delphi-analysis/`, copied from
   [delphi-nanoaod](https://github.com/DickyChant/delphi-nanoaod) — provenance
   in the README there), so no submodule fetch is needed. Override with
@@ -91,6 +97,41 @@ cmake --build build -j
 ./build/delphi_btag_check --source sDST out_final.edm4hep.root data
 ./build/delphi_btag_check --source fDST out_final.edm4hep.root data
 ```
+
+### Native Code4hep source
+
+When this project is added to the Code4hep build through
+`CODE4HEP_DELPHI_SOURCE_DIR`, it also builds `DelphiSource` and the
+`delphiRun` launcher. The source runs the same converter-owned sDST/fDST
+pipelines in memory, publishes each collection as a Stitched event product,
+and lets ordinary Code4hep paths consume or write the result:
+
+```python
+process.source = cms.Source(
+    "DelphiSource",
+    input=cms.untracked.string("input.fadana"),
+    inputMode=cms.untracked.string("file"),       # file, nickname, or pdl
+    conversionPass=cms.untracked.string("sdst"), # sdst or fdst
+    intermediateFiles=cms.untracked.vstring(),    # required for fdst
+    isRealData=cms.untracked.bool(False),
+)
+process.output = cms.OutputModule(
+    "PodioOutputModule",
+    fileName=cms.untracked.string("output.edm4hep.root"),
+)
+process.end = cms.EndPath(process.output)
+```
+
+Run the configuration with `delphiRun config.py`. The dedicated launcher
+is required because the non-PIC DELPHI/CERNLIB archives must live in an
+executable and export their symbols to the dynamically loaded source plugin.
+It links the production archive group, which excludes `libskelanaxx`.
+
+Podio Frame parameters are materialized as reserved framework products while
+an event is inside Code4hep, then restored as ordinary Frame parameters by
+`PodioOutputModule`. Consequently the DSTQID processing tag, signed DELPHI MC
+run number, magnetic field, beamspot, and BTAG configuration retain their
+normal `<source>_EVT_*` / `<source>_BTAGCFG_*` names in the output file.
 
 Pass 2 matches each fullDST event to the intermediate frame by
 `(runNumber, eventNumber)`, and matches tracks within an event by PA.TRAC
@@ -240,9 +281,9 @@ Per-event scalars stored as podio Frame parameters:
 - Era: `dstProcessingTag` (the DSTQID identifier `YYLN` — two-digit year,
   DELANA processing letter, short/mini DST number, e.g. `94C2`) and
   `pxdstVersion`. Together with `dstVersion` (`ISVER`) these identify which
-  calibration SKELANA applied: the first two characters of the processing tag
-  pick the RICH refractive index, and the PXDST version selects between
-  algorithm generations.
+  DELPHI calibration and algorithm era: the first two characters of the
+  processing tag pick the RICH refractive index, and the PXDST version selects
+  between algorithm generations.
 - Event topology (team-4 reconstruction): `hadronicTagTeam4` (hadronic-Z
   flag), `nChargedTeam4`, `nCharged`, `nNeutral`.
 - Energies (GeV): `ECMS` (centre-of-mass), `EChargedTotal`, `ENeutralEM`,
@@ -254,15 +295,13 @@ Per-event scalars stored as podio Frame parameters:
 
 **Track selection**
 
-SKELANA flags tracks rather than removing them (`IFLSTR = 11`), so every
-reconstructed particle is present in the output and
-`sDST_VECP_Particles_SelectionFlag` records the verdict. Which cuts produced
-that verdict is set by `IFLCUT`, published per file as the metadata parameter
-`skelana_IFLCUT`.
+The converter follows the historical `IFLSTR = 11` contract: it flags rejected
+tracks rather than removing them, so every reconstructed particle remains in
+the output and `sDST_VECP_Particles_SelectionFlag` records the verdict. The cut
+table is published per file under the compatibility metadata key
+`skelana_IFLCUT`; this is a format name, not a live common-block read.
 
-This converter uses **`IFLCUT = 3`** — SKELANA's own default for every year.
-SKELANA has no era logic, so the flags match what stock SKELANA produces for
-the same file.
+This converter uses **`IFLCUT = 3`**, the historical default for every year.
 
 | | 1 "old" | 2 "May 98, for 97 data" | 3 "April 99, for 98 data" |
 |---|---|---|---|
@@ -330,11 +369,10 @@ VD-only and ID+VD-without-z tracks).
   and the beam spot (`d0BS`), mm; parallel to `sDST_TRAC_Tracks` (charged
   only — neutrals have no entry), NaN when no PV/BS-corrected value is
   available for that track.
-- `sDST_VECP_Particles_SelectionFlag` (UserData&lt;int32&gt;) — raw per-particle DELPHI lock/status
-  mask; bit 1 marks track-selection failure and bit 32 multi-vertex/REMCLU
-  locking. Other bits are preserved without reinterpretation. −1 marks a
-  particle with no VECP match; neutrals carry a real verdict, since they go
-  through selection too. Parallel to `sDST_MAIN_Particles`.
+- `sDST_VECP_Particles_SelectionFlag` (UserData&lt;int32&gt;) — per-particle
+  lock/status mask reconstructed by the converter; bit 1 marks selection
+  failure and bit 32 multi-vertex/REMCLU locking. −1 marks a particle for which
+  no direct view could be built. Parallel to `sDST_MAIN_Particles`.
 - `sDST_MAIN_Particles_ReconstructionCode` (UserData&lt;int32&gt;) — raw PXPHOT code,
   parallel to `sDST_MAIN_Particles`.
 
@@ -360,9 +398,10 @@ VD-only and ID+VD-without-z tracks).
   > calls it VD. At LEP2 it is set on every VFT-reconstructed track, so a
   > "has VD hits" cut written against it silently widens.
 - `sDST_MAIN_Particles` (ReconstructedParticle) — charged and neutral
-  particles. The 4-momentum and mass come from the SKELANA combined-momentum
-  vector (mass-hypothesis aware). `charge` = +1/−1 from the DELPHI charge code;
-  the "undefined" code maps to 0. Charged particles link to their
+  particles. The converter reconstructs the historical combined momentum from
+  PA `MAIN`/`TRAC`, including the charged-track refit and recovery paths and
+  their mass hypothesis. `charge` = +1/−1 from the DELPHI charge code; the
+  "undefined" code maps to 0. Charged particles link to their
   `sDST_TRAC_Tracks` entry.
 
 **Vertices**
@@ -454,8 +493,8 @@ VD-only and ID+VD-without-z tracks).
   LEP1 (GETDEDX) it is a true count. Take care when comparing a wire-count cut
   across eras.
 
-  The quality flag is recovered by this converter: SKELANA computes it and
-  discards it, so it is not available to a SKELANA analysis.
+  The quality flag is recovered directly by this converter; it was computed
+  but discarded by the historical analysis path.
 - `sDST_HAID_HadronID` (algType 4) — combined hadron ID, 18 params:
   `[0]` kaon-RICH tag, `[1]` proton-RICH, `[2]` pion-RICH, `[3]` kaon-dE/dx,
   `[4]` proton-dE/dx, `[5]` combined kaon likelihood, `[6]` combined proton
@@ -464,7 +503,7 @@ VD-only and ID+VD-without-z tracks).
   (`FLAGG` = `KGRIC(5)`, RING/VETO quality word carried as a float; read
   via `int(round(v))`), `[13..16]` the same four quantities for the liquid
   radiator, `[17]` liquid flag (`FLAGL` = `KLRIC(5)`, same convention).
-- Recomputed hadron-ID tag tables, one collection per SKELANA routine. Each
+- Recomputed hadron-ID tag tables, one collection per DELPHI routine. Each
   tag: −1 = no info, 0 = not this species, 1/2/3 = loose/standard/tight. A
   row is emitted for a track when at least one of its tags is not −1.
   - `sDST_XNEWTAG_RichTags` (algType 41) — RICH ring/veto tags. `params`:
@@ -536,8 +575,9 @@ VD-only and ID+VD-without-z tracks).
   `energy`, direction `iTheta`/`iPhi`; `type` bit 3.
 
   > **Two modules, one detector.** `STIC(19)` is the fullDST module, `SSTC(33)` a
-  > condensation made at shortDST production; SKELANA takes `STIC` when the file
-  > has it, `SSTC` otherwise (`PSHSTC`, no version gate), and the collection is
+  > condensation made at shortDST production; the converter takes `STIC` when
+  > the file has it and `SSTC` otherwise (the historical `PSHSTC` rule, with no
+  > version gate), and the collection is
   > named `SSTC` either way. On the `SSTC` path — 94C2, 95C2, 95D1 only —
   > `energy`/`iTheta`/`iPhi` are the track's MAIN kinematics rather than STIC
   > measurements, `shapeParameters[0]` is scaled 1/10 not 1/1000, `[1]` is a
@@ -689,7 +729,7 @@ Every frame carries source-local provenance:
 
 > **1996 data carries no b-tagging, in either form.** The stored `BTG` bank was
 > not written by that production, and the beamspot database has no entry for
-> those runs, so `IERRBS != 0` and SKELANA skips the AABTAG recalculation.
+> those runs, so `IERRBS != 0` and the converter skips AABTAG recalculation.
 > Both collections are present and empty. This follows the run, not the DST
 > flavour: short and long 1996 samples behave alike.
 

@@ -92,8 +92,8 @@ struct EventContext {
 //   Transcribed  the stored DST value, read from a ZEBRA bank word through
 //                PHDST. Unit conversion and basis change still count as
 //                transcription: the same measurement, represented differently.
-//   Derived      produced by SKELANA at conversion time and read from a PSC*
-//                common — a refit, a re-clustering or a recomputed tag.
+//   Derived      reconstructed at conversion time from stored banks or by a
+//                DELPHI service — a refit, re-clustering, or recomputed tag.
 //   Custom       computed by this converter. Not a DELPHI quantity at all.
 //
 // Every put() states one. A collection that would mix them must be split.
