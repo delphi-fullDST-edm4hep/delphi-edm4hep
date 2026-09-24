@@ -35,8 +35,9 @@ private:
 
   // Run DELPHI's combined tag (AACMBT / AACMZ0, DELPHI 97-094) on the commons
   // AABTGS left behind and emit, under AABTAG_*: the secondary-vertex
-  // hypotheses of AAFSEC, AABTAG's jets with their per-jet tag variables,
-  // and the event-level combined tag. `lpa_to_pa` resolves AABTAG's track
+  // hypotheses of AAFSEC, one CombinedTagRow per AABTAG jet carrying that
+  // jet's tag variables, and the event-level combined tag. AABTAG's jets
+  // themselves are not emitted. `lpa_to_pa` resolves AABTAG's track
   // addresses to particles. Emits empty collections / NaN when `valid` is
   // false, without calling into AABTAG.
   void emitCombinedTag(bool valid,

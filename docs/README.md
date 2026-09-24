@@ -182,7 +182,7 @@ stored bank is read back beside it, so both tags are always emitted (see
   parameters. The combined tag of DELPHI 97-094 (`AACMBT` per jet, `AACMZ0`
   per event) is a separate entry that `PSFBTG` never calls. `BtagWriter`
   calls both after `PSFBTG`, in the sequence BSAURUS's `PXBTAG('RUN')` uses,
-  and emits `AABTAG_SecondaryVertices`, `AABTAG_Jets`, `AABTAG_JetTag`,
+  and emits `AABTAG_SecondaryVertices`, `AABTAG_CombinedTagRow`,
   `AABTAG_CombinedTagEvent` / `CombinedTagHemisphere`, plus nine extra
   per-track words on `AABTAG_TrackTag` (layouts in `Btag.cpp`).
 - **`AACMBT` consumes `RNDM` on simulation** (`AALINT` emulates lepton-ID
