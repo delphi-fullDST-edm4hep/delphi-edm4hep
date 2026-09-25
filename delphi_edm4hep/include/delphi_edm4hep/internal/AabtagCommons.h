@@ -297,8 +297,20 @@ void aacmz0_();   // event tag (Z0 topology) -> XEFFEV
 // inefficiency. Bracketing the combined tag with these keeps the smearing of
 // the following event, and therefore the lifetime tag, bit-identical to a
 // converter that never called it.
-void rdmout_(std::uint32_t* seed);
-void rdmin_ (std::uint32_t* seed);
+//
+// The array is two elements and the seed it holds is not ours to read. Two
+// different RDMOUT/RDMIN pairs exist in the DELPHI libraries under the same
+// symbol name, and they disagree about the argument:
+//   libdstanaxx.a  saves the state inside SXRNU (slot 3, via SXRAST/SXRIN)
+//                  and never touches the argument at all -- this is the one
+//                  we link, so `seed` stays exactly as initialised here;
+//   libddappxx.a   calls RANECQ and writes TWO integers into the array.
+// Only libdstanaxx.a is on our link line today (libddappxx.a is not in the
+// link group, though it sits in the same directory), but a two-element array
+// is correct under either routine, while a single 32-bit variable would let
+// the ddapp version write four bytes past it.
+void rdmout_(std::int32_t seed[2]);
+void rdmin_ (std::int32_t seed[2]);
 
 }  // extern "C"
 

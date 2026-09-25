@@ -185,6 +185,23 @@ stored bank is read back beside it, so both tags are always emitted (see
   and emits `AABTAG_SecondaryVertices`, `AABTAG_CombinedTagRow`,
   `AABTAG_CombinedTagEvent` / `CombinedTagHemisphere`, plus nine extra
   per-track words on `AABTAG_TrackTag` (layouts in `Btag.cpp`).
+- **Two per-track words of `AABTAG_TrackTag` are not what the DELPHI headers
+  suggest.** `PHIV` is documented in `AAMAIN` as "the sign of impact
+  parameter", but `AASIGN` fills it through `AASGNT`/`AADCAJ`/`AADIST`/`POINTF`
+  with the signed distance **along the jet axis**, in cm, from the primary
+  vertex to the track's point of closest approach to that axis; only its sign
+  signs the impact parameter. `IST` as we store it is the track-quality code
+  left by `AASTRK`/`AASLCT`/`AAIMPC` (`-98` no VD hits, `-90` passed an
+  NLAY/CHI2VD class, `10` within the impact-parameter significance cut, `-99`
+  the initial value), not `AAK0LS`'s V0 flags: `99` and `200`/`300`/`400` are
+  reachable in principle but did not occur in 70k tracks of 94c data, in 5910
+  of which the particle is a reconstructed V0 daughter.
+- **`DISTJ` / `ERRTJ` carry a "not computed" placeholder for a third of all
+  tracks** — `AASGNT` writes `dist = 0, err = 100 cm` when the track has no VD
+  z-hits or the primary vertex has a bad z-covariance, and `AADCAJ` bails out
+  with `dist = 0, err = sqrt(200) cm` on a null jet momentum. The converter
+  emits `NaN` for both in those rows (as it does for `PSCBTG`'s `2.0`);
+  unfiltered they move the mean of the error column from 0.27 mm to 336 mm.
 - **`AACMBT` consumes `RNDM` on simulation** (`AALINT` emulates lepton-ID
   inefficiency with random drops when `nrun < 0`), and AABTAG's own MC
   impact-parameter smearing (`AAPS9x`) draws from the same CERNLIB stream.

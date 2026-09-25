@@ -223,12 +223,37 @@ void BtagWriter::emit()
     // readers keep their indices.
     tag.addToParameters(static_cast<float>(aa::IJET(i)));        // CombinedTagRow row, 1-based
     tag.addToParameters(static_cast<float>(aa::ITHR(i)));        // thrust hemisphere (1/2)
-    tag.addToParameters(aa::PHIV(i));                            // IP sign (+1/-1; -1 also for unused)
+    // PHIV is not a sign, despite what the AAMAIN header says. AASIGN fills it
+    // through AASGNT -> AADCAJ -> AADIST -> POINTF, which solves
+    // s1 = PV + al * jet_direction for the two points of closest approach
+    // between the track helix and the jet axis and returns `al`: the signed
+    // distance ALONG THE JET AXIS, in cm, from the primary vertex to that
+    // point. Its sign is what signs the impact parameter -- which is all the
+    // DELPHI comment ever meant -- and AADCAJ's own header says so. Left in cm
+    // deliberately: the value degrades to a bare +-1 whenever the distance
+    // below is a placeholder, so it is not a length everywhere.
+    tag.addToParameters(aa::PHIV(i));
     tag.addToParameters(aa::RPDT(i));                            // rapidity w.r.t. its jet
-    tag.addToParameters(static_cast<float>(aa::DISTJ(i) * kCm2Mm)); // 3-D track-jet distance (mm)
-    tag.addToParameters(static_cast<float>(aa::ERRTJ(i) * kCm2Mm)); // its error (mm)
+    // AASGNT abandons the track-jet distance in two places and leaves a
+    // placeholder rather than a measurement: a track with no VD z-hits or a
+    // primary vertex with a bad z-covariance gives dist = 0, err = 100 cm, and
+    // AADCAJ bails out on a null jet momentum with dist = 0, err = sqrt(200)
+    // cm. Together that is a third of all tracks (34% over 70k tracks of 94c
+    // data), and their err = 1000 mm drags the mean of the column from 0.27 mm
+    // to 336 mm. Map both to NaN, as prob() does for PSCBTG's 2.0; in those
+    // rows only the SIGN of PHIV above carries information.
+    const bool jetDistMeasured = aa::DISTJ(i) != 0.f && aa::ERRTJ(i) < 100.f;
+    tag.addToParameters(jetDistMeasured ? static_cast<float>(aa::DISTJ(i) * kCm2Mm) : kNaN);
+    tag.addToParameters(jetDistMeasured ? static_cast<float>(aa::ERRTJ(i) * kCm2Mm) : kNaN);
     tag.addToParameters(static_cast<float>(aa::INSV(i)));        // SV hypothesis using it (+100 flags)
-    tag.addToParameters(static_cast<float>(aa::IST(i)));         // 99 rejected, 200/300/400 K0/Lambda/gamma daughter
+    // Track-quality code as AASTRK / AASLCT / AAIMPC leave it, i.e. before the
+    // combined tag runs: -98 no VD hits (or p > 1.1 Ebeam), -90 passed an
+    // NLAY/CHI2VD class, 10 within AAIMPC's impact-parameter significance cut,
+    // -99 AASTRK's initial value where nothing reclassified it. AAK0LS can also
+    // write 99 (not in the track list, rewritten to -90 by the combined tag)
+    // and 200/300/400 (K0 / Lambda / conversion daughter), but neither appeared
+    // in 70k tracks of 94c data -- see docs/README.md.
+    tag.addToParameters(static_cast<float>(aa::IST(i)));
     tag.addToParameters(static_cast<float>(aa::IJSV(i)));        // ditto, after the SV redefinition
 
     if (auto it = lpa_to_pa.find(aa::IADTR(i)); it != lpa_to_pa.end()) {
@@ -297,11 +322,11 @@ void BtagWriter::emitCombinedTag(bool valid,
     // that the next event's impact-parameter smearing would otherwise have
     // used; restore the seed so the lifetime tag stays bit-identical to the
     // unmodified converter. See the note on rdmout_/rdmin_ in AabtagCommons.h.
-    std::uint32_t seed = 0;
-    aa::rdmout_(&seed);
+    std::int32_t seed[2] = {0, 0};   // not filled by the routine we link;
+    aa::rdmout_(seed);               // SXRNU keeps the state in its own slot 3
     aa::aacmbt_();
     aa::aacmz0_();
-    aa::rdmin_(&seed);
+    aa::rdmin_(seed);
     njet  = std::clamp(aa::NJET(),  0, aa::kMaxJets);
     nhypo = std::clamp(aa::NHYPO(), 0, aa::kMaxHypo);
   }
