@@ -355,6 +355,12 @@ VD-only and ID+VD-without-z tracks).
   7 RIB, 9 OD, 10 HPC, 14 HAB, 15 MUB, 19 STIC, 21 FCA, 22 RIF, 23 HAF,
   26 FCB, 27 EMF, 31 MUF.
 
+  > **Bit numbers are DELPHI's, counted from 1** — so bit 6 (TPC) is
+  > `value & (1 << 5)`, not `1 << 6`. Using the number directly as a C shift
+  > selects the neighbouring detector, which returns a wrong but entirely
+  > believable answer rather than an error. Named masks in
+  > `Tracking/Tracking.h`.
+
   > **Bit 4 is "VD or VFT", not VD alone** — DELPHI's own code says so
   > (`mammoth.car:13556`), though the content note predates the VFT and still
   > calls it VD. At LEP2 it is set on every VFT-reconstructed track, so a
@@ -489,8 +495,15 @@ VD-only and ID+VD-without-z tracks).
   > not recoverable: the routine that computes it needs VD pulse heights, which the
   > shortDST does not carry. From 1996 the per-hit VD signal-to-noise ratio is
   > available instead, in `eDep` on `sDST_TDVD_VDHits` / `_VDPoints`.
-- `sDST_MUID_MuonID` (algType 2) — `[0]` muon tag (MUCAL2: 1 very-loose …
-  4 tight, 5 HCAL), `[1]` global χ² of the very-loose refit, `[2]` hit pattern.
+- `sDST_MUID_MuonID` (algType 2) — `[0]` MUCAL2 tag, `[1]` global χ² of the
+  very-loose refit, `[2]` hit pattern.
+
+  > **`[0]` is a bit mask, not a level**, with DELPHI's 1-based bit numbers:
+  > 1 very loose, 2 loose, 3 standard, 4 tight, 5 HCAL — test
+  > `value & (1 << (N-1))`. The four chamber tags nest; HCAL is independent and
+  > occurs alone, so `>= 2` also admits an HCAL-only tag with no chamber
+  > requirement. Standard is the loosest tag requiring a hit outside the iron.
+  > Named masks in `Pid/ParticleId.h`.
 - `sDST_ELID_ElectronID` (algType 3) — `[0]` electron tag (0 not run, 1 not-e,
   2 very-loose, 3 loose, 4 standard, 5 tight), `[1]` γ-conversion tag.
 - `sDST_PHOT_PhotonID` (algType 30) — HPC photon-ID scores: energy-weighted

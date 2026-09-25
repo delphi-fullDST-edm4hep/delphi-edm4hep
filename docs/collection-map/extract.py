@@ -21,6 +21,7 @@ import awkward as ak
 import uproot
 
 import domains
+import slotdocs
 
 _TYPEINFO = "events___CollectionTypeInfo"
 
@@ -154,7 +155,7 @@ def _labels(samples):
             for i, label in labels.items()}
 
 
-def build(samples):
+def build(samples, tables=None):
     """Merge per-sample readings into one map."""
     label = _labels(samples)
     names = sorted(set().union(*(set(s["types"]) for s in samples.values())))
@@ -170,6 +171,7 @@ def build(samples):
     for owner, relation in sorted(declared - {e[:2] for e in resolved}):
         unfilled.setdefault(owner, []).append(relation)
 
+    tables = tables or {}
     any_sample = next(iter(samples.values()))
     collections = {}
     for name in names:
@@ -185,6 +187,9 @@ def build(samples):
             "populated_in": [label[i] for i in sorted(samples)
                              if samples[i]["counts"].get(name)],
             "unfilled_relations": unfilled.get(name, []),
+            # Documentation tables for conventions the schema cannot carry:
+            # slot layouts, bit words, coded integers. Absent for most.
+            "tables": tables.get(name.split("_", 1)[1], []),
         }
 
     parameters = {
@@ -217,6 +222,8 @@ def main():
                                              "delphi_edm4hep" / "src"))
     parser.add_argument("--refs", required=True)
     parser.add_argument("--out", default="collection_map.json")
+    parser.add_argument("--doxygen-xml", default=None,
+                        help="doxygen XML directory; adds documentation tables")
     args = parser.parse_args()
 
     domain_index = domains.index(args.src)
@@ -245,7 +252,9 @@ def main():
     if failed:
         sys.exit(1)
 
-    Path(args.out).write_text(json.dumps(build(samples), indent=2) + "\n")
+    tables = slotdocs.read(args.doxygen_xml) if args.doxygen_xml else {}
+    Path(args.out).write_text(
+        json.dumps(build(samples, tables), indent=2) + "\n")
     print(f"{args.out}: {len(samples)} samples, "
           f"{len(common)} collections")
 

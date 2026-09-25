@@ -17,6 +17,25 @@ const PROVENANCE = {
   custom: 'custom (converter)',
 };
 
+// Conventions the schema cannot carry -- a slot layout, a bit word, a coded
+// integer -- declared as an enum beside the writer and rendered here. This is
+// the only place a reader of the file can learn what these numbers mean.
+const HEAD = { index: '#', mask: 'mask', value: 'value' };
+
+const docTable = (t) =>
+  '<h3>' + t.title + '</h3>'
+  + '<table class="slots"><thead><tr><th>' + (HEAD[t.kind] || '#') + '</th>'
+  + '<th>name</th><th>meaning</th></tr></thead><tbody>'
+  + t.rows.map(r => '<tr><td><code>' + r.label + '</code></td>'
+      + '<td><code>' + r.name + '</code></td><td>' + r.brief
+      + (r.bits ? '<table class="bits"><tbody>'
+          + r.bits.map(b => '<tr><td><code>' + b.label + '</code></td>'
+              + '<td><code>' + b.name + '</code></td><td>' + b.brief
+              + '</td></tr>').join('')
+          + '</tbody></table>' : '')
+      + '</td></tr>').join('')
+  + '</tbody></table>';
+
 const list = (items) => items.length
   ? '<ul>' + items.map(i => '<li>' + i + '</li>').join('') + '</ul>'
   : '<span class="no">none</span>';
@@ -44,7 +63,8 @@ function describe(name) {
     + '<dt>Links in</dt><dd>' + list(inb) + '</dd>'
     + '<dt>Parallel arrays</dt><dd>' + list(parallel[name] || []) + '</dd>'
     + '<dt>Unfilled relations</dt><dd>' + list(c.unfilled_relations) + '</dd>'
-    + '</dl>';
+    + '</dl>'
+    + (c.tables || []).map(docTable).join('');
 }
 
 function focus(name) {
