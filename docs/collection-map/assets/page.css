@@ -55,3 +55,17 @@ body.no-companions .node.companion, body.no-companions .tie { display:none; }
 .tag { display:inline-block; padding:1px 6px; border-radius:9px;
        background:var(--soft); font-size:11px; }
 .no { color:var(--line); }
+
+/* Documentation tables: a collection's slot layout, bit word or coded values. */
+table.slots { border-collapse: collapse; width: 100%; font-size: 12px;
+              margin-top: 4px; }
+table.slots th { text-align: left; font-weight: 600; padding: 2px 6px 4px 0;
+                 border-bottom: 1px solid currentColor; opacity: .65; }
+table.slots td { padding: 2px 6px 2px 0; vertical-align: top; }
+table.slots tr + tr td { border-top: 1px solid rgba(127,127,127,.22); }
+table.slots code { font-size: 11px; white-space: nowrap; }
+/* A slot that is itself a bit field lists its bits inline. */
+table.bits { border-collapse: collapse; margin: 4px 0 2px 0; width: 100%;
+             font-size: 11px; opacity: .85; }
+table.bits td { padding: 1px 6px 1px 0; vertical-align: top;
+                border-top: 1px dotted rgba(127,127,127,.35); }

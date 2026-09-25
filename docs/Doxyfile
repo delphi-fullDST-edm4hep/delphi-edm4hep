@@ -46,3 +46,11 @@ QUIET                  = YES
 # The collection map is copied into the site root; CI renders it before
 # the docs build.
 HTML_EXTRA_FILES       = docs/collection-map/collection_map.html
+
+# The collection map reads per-collection documentation tables out of this XML;
+# `@collection{NAME}` on an enum says which collection it documents, and
+# `@bits{NAME,SLOT}` attaches one enum to a single slot of another table.
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+ALIASES               += "collection{1}=@par Collection^^\1"
+ALIASES               += "bits{2}=@par Bits^^\1,\2"

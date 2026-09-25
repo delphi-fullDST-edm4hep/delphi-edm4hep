@@ -369,7 +369,8 @@ void VertexWriter::emit()
   // sDST_TRAC_Tracks (same order), in **mm**, LCIO sign convention
   // (consistent with the TrackState the tracks carry). Linear (PV is ~mm
   // from the origin, so the helix-curvature term is negligible at this
-  // precision); flag is 1 when a PV was available, 0 otherwise (value -999).
+  // precision); the flag is ImpactFlag in Vertex/Vertex.h, and -999 is the
+  // sentinel it guards.
   // NOTE the dual convention: this <tag>_PV_trackD0PV is the DATA-usable one
   // (mm, LCIO, parallel to TRAC_Tracks); the Tracking.cpp <tag>_TRAC_d0PV is
   // QTRAC converted cm->mm, DELPHI sign, also parallel to TRAC_Tracks
@@ -383,7 +384,8 @@ void VertexWriter::emit()
     const auto& tracks = frame_.get<edm4hep::TrackCollection>(
         makeName("TRAC", "Tracks"));
     for (const auto& trk : tracks) {
-      float d0pv = -999.f, z0pv = -999.f; std::int32_t flag = 0;
+      float d0pv = -999.f, z0pv = -999.f;
+      std::int32_t flag = kImpactMissing;
       if (have_pv) {
         // AtIP track state (referencePoint = origin by construction).
         for (const auto& ts : trk.getTrackStates()) {
@@ -393,7 +395,7 @@ void VertexWriter::emit()
           const double c = std::cos(phi);
           d0pv = static_cast<float>(ts.D0 + (px * s - py * c));
           z0pv = static_cast<float>(ts.Z0 - pz + ts.tanLambda * (px * c + py * s));
-          flag = 1;
+          flag = kImpactValid;
           break;
         }
       }

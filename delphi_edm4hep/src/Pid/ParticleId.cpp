@@ -33,6 +33,7 @@
 #include <edm4hep/RecDqdxCollection.h>
 #include <podio/Frame.h>
 
+#include <cassert>
 #include <limits>
 #include <string>
 #include <vector>
@@ -194,9 +195,7 @@ void ParticleIdWriter::emit()
     }
 
     // ---- Muon ID (PSCMUD) ----
-    //   KMUID(1) = MUCAL2 tag (bits 1-5 for very-loose..tight..HCAL)
-    //   QMUID(2) = global chi2 of very-loose refit
-    //   KMUID(3) = hit pattern with inefficiencies
+    // Slot layout and the tag bit masks are in Pid/ParticleId.h.
     {
       const int tag = sk::KMUID(1, i);
       if (tag != 0) {
@@ -204,6 +203,7 @@ void ParticleIdWriter::emit()
         pid.addToParameters(static_cast<float>(tag));
         pid.addToParameters(sk::QMUID(2, i));
         pid.addToParameters(static_cast<float>(sk::KMUID(3, i)));
+        assert(pid.getParameters().size() == kMuCount);
       }
     }
 
