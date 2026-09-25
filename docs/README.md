@@ -175,6 +175,40 @@ stored bank is read back beside it, so both tags are always emitted (see
   functions.
 - `PSFBTG` pre-fills the PSCBTG probabilities with `2.0`, so **2.0 means "not
   computed"**, not a probability.
+- **AABTAG runs a secondary-vertex search on every event and never stores
+  it.** `AABTGS -> AASIGN -> AAFSEC` (per jet: pair seeds with chi2 < 4, grown
+  with delta-chi2 < 5, L/sigma > 4, L < 2.5 cm, V0 daughters excluded by
+  `AAK0LS`) fills the `AASCND` common; AASIGN only uses it to re-sign impact
+  parameters. The combined tag of DELPHI 97-094 (`AACMBT` per jet, `AACMZ0`
+  per event) is a separate entry that `PSFBTG` never calls. `BtagWriter`
+  calls both after `PSFBTG`, in the sequence BSAURUS's `PXBTAG('RUN')` uses,
+  and emits `AABTAG_SecondaryVertices`, `AABTAG_CombinedTagRow`,
+  `AABTAG_CombinedTagEvent` / `CombinedTagHemisphere`, plus nine extra
+  per-track words on `AABTAG_TrackTag` (layouts in `Btag.cpp`).
+- **Two per-track words of `AABTAG_TrackTag` are not what the DELPHI headers
+  suggest.** `PHIV` is documented in `AAMAIN` as "the sign of impact
+  parameter", but `AASIGN` fills it through `AASGNT`/`AADCAJ`/`AADIST`/`POINTF`
+  with the signed distance **along the jet axis**, in cm, from the primary
+  vertex to the track's point of closest approach to that axis; only its sign
+  signs the impact parameter. `IST` as we store it is the track-quality code
+  left by `AASTRK`/`AASLCT`/`AAIMPC` (`-98` no VD hits, `-90` passed an
+  NLAY/CHI2VD class, `10` within the impact-parameter significance cut, `-99`
+  the initial value), not `AAK0LS`'s V0 flags: `99` and `200`/`300`/`400` are
+  reachable in principle but did not occur in 70k tracks of 94c data, in 5910
+  of which the particle is a reconstructed V0 daughter.
+- **`DISTJ` / `ERRTJ` carry a "not computed" placeholder for a third of all
+  tracks** — `AASGNT` writes `dist = 0, err = 100 cm` when the track has no VD
+  z-hits or the primary vertex has a bad z-covariance, and `AADCAJ` bails out
+  with `dist = 0, err = sqrt(200) cm` on a null jet momentum. The converter
+  emits `NaN` for both in those rows (as it does for `PSCBTG`'s `2.0`);
+  unfiltered they move the mean of the error column from 0.27 mm to 336 mm.
+- **`AACMBT` consumes `RNDM` on simulation** (`AALINT` emulates lepton-ID
+  inefficiency with random drops when `nrun < 0`), and AABTAG's own MC
+  impact-parameter smearing (`AAPS9x`) draws from the same CERNLIB stream.
+  Without a guard the *next* event's lifetime tag changes. `BtagWriter`
+  brackets the call with `RDMOUT` / `RDMIN`; with that, every pre-existing
+  AABTAG output is bit-identical to a build that never calls the combined
+  tag (checked on 400 Z->bb MC events and a full 94c data file).
 
 ### Known divergences from the reference sequence
 
