@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -16,6 +17,40 @@ inline constexpr int kMaxTracks = 100;
 inline constexpr int kMaxPrimaryVertexNdf = 2 * kMaxTracks;
 inline constexpr std::int32_t kMaxVdHits = 6;
 inline constexpr std::int32_t kMaxVdLayers = 3;
+
+/// Slot layout of the `AABTAG_TrackTag` `parameters` VectorMember.
+///
+/// EDM4hep types `parameters` as a bare float vector, so slot meanings and
+/// units are convention: declared once here, appended in this order by
+/// `Btag.cpp`, read by name by `delphi_btag_check`, with `kTrCount` keeping
+/// the two in step. Slots [0..10] come from AABTGS / AASIGN, [11..19] from
+/// AAJETS / AASCND / AAJESV; the DELPHI mnemonic locates each in
+/// `aabtagxx.car`. Unmarked slots are dimensionless.
+enum TrackTagIndex : std::size_t {
+  kTrProb = 0,   ///< `TRPR` lifetime probability
+  kTrProbZ,      ///< `TRPRZ` the same, using z
+  kTrChi2Vd,     ///< `CHI2VD` chi2 of the VD hits on the track
+  kTrChi2Tr,     ///< `CHI2TR` track-to-vertex chi2; NaN unless #kTrAttached
+  kTrMomentum,   ///< `PMOM` track momentum, GeV
+  kTrNVdp,       ///< `NVDP` VD hits
+  kTrNVdpz,      ///< `NVDPZ` of which carry z
+  kTrNLay,       ///< `NLAY` VD layers touched
+  kTrNLayz,      ///< `NLAYZ` of which carry z
+  kTrIsrt,       ///< `ISRT` 0 if the track was not used by the tag
+  kTrAttached,   ///< 1 if AABTAG attached the track to its primary vertex
+  kTrIjet,       ///< `IJET` `AABTAG_CombinedTagRow` row, 1-based
+  kTrIthr,       ///< `ITHR` thrust hemisphere (1 or 2)
+  kTrPhiv,       ///< `PHIV` signed distance along the jet axis, cm -- not mm
+                 ///< like the rest; exactly +-1 wherever #kTrDistj is NaN,
+                 ///< carrying only a sign there
+  kTrRpdt,       ///< `RPDT` track rapidity with respect to its jet
+  kTrDistj,      ///< `DISTJ` 3-D track-jet distance, mm; NaN if not computed
+  kTrErrtj,      ///< `ERRTJ` error on #kTrDistj, mm; NaN on the same rows
+  kTrInsv,       ///< `INSV` SV hypothesis using the track (+100 flags)
+  kTrIst,        ///< `IST` track-quality code (AASTRK / AASLCT / AAIMPC)
+  kTrIjsv,       ///< `IJSV` jet after the SV redefinition
+  kTrCount       ///< number of slots; the expected `parameters` size
+};
 
 inline bool isSelectedPayloadName(std::string_view name,
                                   std::string_view source) {
