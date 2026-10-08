@@ -128,8 +128,8 @@ int main(int argc, char** argv) {
   }
 
   // Per-event dispatch: Event scalars first, then Truth gen-particles
-  // (since RecoToGen links need them), then Tracking (which Vertex /
-  // V0 / PhotonConv depend on), then the RecoToGen link emission, then
+  // (since RecoToMC links need them), then Tracking (which Vertex /
+  // V0 / PhotonConv depend on), then the RecoToMC link emission, then
   // Vertex. Writers run under Pass::Sdst; the prefix on each
   // collection follows its bank.
   cfg.on_event = [](podio::Frame& frame, int /*run*/, int /*evt*/) {

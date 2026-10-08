@@ -90,6 +90,7 @@ add_library(delphi_edm4hep
   src/Calorimeter/Calorimeter.cpp
   src/Pid/ParticleId.cpp
   src/Truth/Truth.cpp
+  src/Truth/DelphiParticleCode.cpp
   src/Tracking/MatchProvenance.cpp
   src/Pid/Tof.cpp
   src/Pid/Mtpc.cpp

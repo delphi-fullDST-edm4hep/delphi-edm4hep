@@ -1,8 +1,8 @@
 // TblHybrid domain — pass-2 hybrid cascade writer.
 //
-// Re-emits sDST_TBL_RecoToGen → fDST_TBL_RecoToGen with the `from`
+// Re-emits sDST_TBL_RecoToMC → fDST_TBL_RecoToMC with the `from`
 // relation re-pointed at fDST_MAIN_Particles. The `to` (MCParticle)
-// stays pointing at sDST_LUJ_GenParticles which is unchanged.
+// stays pointing at sDST_STSH_MCParticles which is unchanged.
 
 #pragma once
 

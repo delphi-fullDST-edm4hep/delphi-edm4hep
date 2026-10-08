@@ -295,12 +295,18 @@ VD-only and ID+VD-without-z tracks).
 
 **Truth**
 
-- `sDST_LUJ_GenParticles` (MCParticle) — the generator (LUND/JETSET) event
-  record: `PDG`, `generatorStatus`, momentum/mass (GeV), production vertex
-  (mm), charge, and parent links.
-- `sDST_TBL_RecoToGen` (RecoMCParticleLink) — exact reconstructed→generated
+- `sDST_STSH_MCParticles` (MCParticle) — the simulation record of the STSH
+  bank: the generator (LUND/JETSET) event, followed by the particles the
+  detector simulation created (`generatorStatus` 0, `isCreatedInSimulation`),
+  such as K0S and Lambda decay products, which the generator leaves to DELSIM,
+  and secondaries from interactions in the detector. `PDG`, momentum/mass
+  (GeV), production vertex and endpoint (mm), charge, and parent/daughter
+  links. A simulated particle's parent is the particle entering its origin
+  vertex.
+- `sDST_TBL_RecoToMC` (RecoMCParticleLink) — exact reconstructed→simulated
   correspondence from the DELPHI association tables (not a geometric match);
-  `from` = `sDST_MAIN_Particles`, `to` = `sDST_LUJ_GenParticles`.
+  `from` = `sDST_MAIN_Particles`, `to` = `sDST_STSH_MCParticles`, the
+  generator particle or, for a DELSIM-created track, the simulated particle.
 
 **Tracks & particles**
 
@@ -680,7 +686,7 @@ originals described in §2.2.
   from the fullDST PA chain, linked from `fDST_TRAC_Tracks`. `ndf` and `chi2`
   are native on the segments, the TE descriptor is in `quality`, and the
   element length is the parallel `fDST_TE_Segments_Length`.
-- `fDST_TBL_RecoToGen` — `from` re-pointed to `fDST_MAIN_Particles`.
+- `fDST_TBL_RecoToMC` — `from` re-pointed to `fDST_MAIN_Particles`.
 
 ### 2.5 B-tagging
 

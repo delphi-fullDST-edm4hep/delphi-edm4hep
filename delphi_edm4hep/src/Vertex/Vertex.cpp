@@ -275,12 +275,10 @@ void VertexWriter::emit()
 
   // ----- Simulation PV (PSCVTX sim region: first entry only) -----
   // PSCVTX stores reco at 1..NVTXMX and simulation at NVTXMX+1..2*NVTXMX.
-  // Only the FIRST sim slot (NVTXMX+1) is reliable: it is the true IP
-  // (verified -- matches the MCParticle primary in 158/160 mumu/qq/bb
-  // events). NVTXMC over-counts on our DELSIM SDST, so slots 2..NVTXMC read
-  // uninitialised memory (monotonically growing, non-physical positions with
-  // no MCParticle counterpart) -- we must NOT emit those. Real simulation
-  // DECAY vertices live in sDST_LUJ_GenParticles (the reliable truth record).
+  // The first simulated slot (NVTXMX+1) is the true interaction point. The
+  // others are DELSIM's decay and interaction vertices; they are not emitted
+  // here but give the vertices and endpoints of sDST_STSH_MCParticles
+  // (Truth.cpp).
   if (sk::NVTXMC >= 1) {
     const int j = sk::NVTXMX + 1;
     auto vtx = vtxCol.create();

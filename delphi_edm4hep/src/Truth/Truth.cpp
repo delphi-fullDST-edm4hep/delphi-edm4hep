@@ -1,22 +1,31 @@
 // Truth domain — TruthGenWriter + TruthRecoLinkWriter.
 //
-// PSCLUJ (filled by PSHLUJ on sDST or PSFLUJ on fDST per bank-presence
-// gating) feeds TruthGenWriter. PSCTBL exact tables (IPAST then ISTLU)
-// feed TruthRecoLinkWriter, replacing the legacy helix-NN match.
+// TruthGenWriter emits the simulation record of the STSH bank: the generator
+// event (PSCLUJ, filled by PSHLUJ on sDST or PSFLUJ on fDST per bank-presence
+// gating) and the particles the detector simulation added (the simulated
+// tracks of PSCVEC / PSCTBL without a generator line). TruthRecoLinkWriter
+// links reconstructed particles to them through the exact PSCTBL tables.
 
 #include "delphi_edm4hep/Truth/Truth.h"
+#include "delphi_edm4hep/Truth/DelphiParticleCode.h"
 
 #include "phdst/uxcom.hpp"
 #include "phdst/uxlink.hpp"
+#include "skelana/mtrack.hpp"
 #include "skelana/pscluj.hpp"
 #include "skelana/psctbl.hpp"
+#include "skelana/pscvec.hpp"
+#include "skelana/pscvtx.hpp"
 
 #include <edm4hep/MCParticleCollection.h>
 #include <edm4hep/RecoMCParticleLinkCollection.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <iostream>
 #include <optional>
+#include <set>
 #include <vector>
 
 // JETSET helpers. Charges via LUCHGE in units of e/3 (exhaustive PDG
@@ -93,6 +102,60 @@ std::optional<std::array<double, 3>> read_sim_pv_mm() {
                                  ph::Q(lpv + 7) * kCm2Mm};
   }
   return std::nullopt;
+}
+
+// The simulated tracks (ST) SKELANA unpacks from STSH: track number 1..NST.
+// Their momenta sit in the second half of VECP, their vertices in the
+// simulated half of QVTX, and PSCTBL relates them to the generator lines.
+struct SimulatedTrack {
+  int number;
+  float vec(int word) const { return sk::VECP(word, sk::MTRACK + number); }
+  int generatorLine() const { return sk::ISTLU(number); }      // 0: made by DELSIM
+  int originVertex() const { return sk::ISTVX(1, number); }
+  int endVertex() const { return sk::ISTVX(2, number); }       // 0: none
+};
+
+// The second half of VECP holds MTRACK simulated tracks.
+int simulatedTrackCount() {
+  if (sk::NST() > sk::MTRACK) {
+    static bool warned = false;
+    if (!warned) {
+      std::cerr << "delphi_edm4hep::truth: " << sk::NST()
+                << " simulated tracks, only the first " << sk::MTRACK
+                << " fit SKELANA's track vector\n";
+      warned = true;
+    }
+    return sk::MTRACK;
+  }
+  return sk::NST();
+}
+
+// Position (mm) of simulated vertex k; empty when k is not a vertex.
+std::optional<edm4hep::Vector3d> simulatedVertexPosition(int k) {
+  if (k < 1 || k > sk::NVTXMX) return std::nullopt;
+  const int column = sk::NVTXMX + k;
+  return edm4hep::Vector3d{sk::QVTX(6, column) * kCm2Mm,
+                           sk::QVTX(7, column) * kCm2Mm,
+                           sk::QVTX(8, column) * kCm2Mm};
+}
+
+// The simulated track entering simulated vertex k; 0 when none.
+int trackEnteringVertex(int k) {
+  if (k < 1 || k > sk::NVTXMX) return 0;
+  return sk::KVTX(2, sk::NVTXMX + k);
+}
+
+// PDG code of a simulated track's DELPHI particle code. A code outside the
+// table gives 0 and is reported once.
+int pdgOfSimulatedTrack(const SimulatedTrack& track) {
+  const int delphiCode = static_cast<int>(std::lround(track.vec(8)));
+  const int pdg = pdgFromDelphiCode(delphiCode);
+  static std::set<int> reported;
+  if (pdg == 0 && reported.insert(delphiCode).second) {
+    std::cerr << "delphi_edm4hep::truth: DELPHI particle code " << delphiCode
+              << " has no PDG code; written as 0\n";
+  }
+  return pdg;
 }
 
 }  // namespace
@@ -186,7 +249,51 @@ void TruthGenWriter::emit() {
     }
   }
 
-  put(std::move(mc), "LUJ", "GenParticles", Provenance::Derived);
+  // MCParticle of each simulated track, by track number (entry 0 unused).
+  // A track with a generator line is that line's particle; a track made by
+  // DELSIM (decay products, interactions in the detector) gets a new one.
+  std::vector<edm4hep::MutableMCParticle> particleOfTrack(simulatedTrackCount() + 1);
+  for (int number = 1; number <= simulatedTrackCount(); ++number) {
+    const SimulatedTrack track{number};
+    const int line = track.generatorLine();
+    if (line >= 1 && line <= nGen) {
+      particleOfTrack[number] = result.handles[line - 1];
+      continue;
+    }
+    auto particle = mc.create();
+    particle.setPDG(pdgOfSimulatedTrack(track));
+    particle.setGeneratorStatus(0);
+    particle.setCreatedInSimulation(true);
+    particle.setMomentum({track.vec(1), track.vec(2), track.vec(3)});
+    particle.setMass(track.vec(5));
+    particle.setCharge(track.vec(7));
+    const auto origin = simulatedVertexPosition(track.originVertex());
+    if (origin) {
+      particle.setVertex(*origin);
+    }
+    particleOfTrack[number] = particle;
+  }
+
+  // Where DELSIM ended a track (decay or interaction), which replaces the
+  // estimate from generator daughters above and is the only one for the
+  // particles DELSIM decays (K0S, Lambda, ...). Who made each DELSIM
+  // particle: the track entering its origin vertex.
+  for (int number = 1; number <= simulatedTrackCount(); ++number) {
+    const SimulatedTrack track{number};
+    auto& particle = particleOfTrack[number];
+    const auto end = simulatedVertexPosition(track.endVertex());
+    if (end) {
+      particle.setEndpoint(*end);
+    }
+    if (track.generatorLine() >= 1) continue;
+    const int parentTrack = trackEnteringVertex(track.originVertex());
+    if (parentTrack < 1 || parentTrack > simulatedTrackCount()) continue;
+    particle.addToParents(particleOfTrack[parentTrack]);
+    particleOfTrack[parentTrack].addToDaughters(particle);
+  }
+  result.particleOfSimulatedTrack = std::move(particleOfTrack);
+
+  put(std::move(mc), "STSH", "MCParticles", Provenance::Derived);
   ctx_.gen_truth = std::move(result);
 }
 
@@ -196,36 +303,36 @@ void TruthRecoLinkWriter::emit() {
 
   // Need both upstream writers' outputs.
   if (!ctx_.gen_truth || !ctx_.tracking) {
-    put(std::move(links), "TBL", "RecoToGen", Provenance::Transcribed);   // emit empty + return
+    put(std::move(links), "TBL", "RecoToMC", Provenance::Transcribed);   // emit empty + return
     return;
   }
   const auto& gen      = *ctx_.gen_truth;
   const auto& tracking = *ctx_.tracking;
 
   // PSCTBL.NPA = # PA particles = VECP entries. For each VECP index j:
-  //   ist = IPAST(j)                 (ST index; 0 if no MC ancestor)
-  //   ilu = ISTLU(ist)               (LU index)
+  //   simulatedTrack = IPAST(j)            (0 if no simulated track)
   //   particle_idx = vecp_to_particle[j]   (-1 if Tracking dropped it)
+  // The simulated track's MCParticle is its generator particle, or the one
+  // DELSIM created (e.g. a Lambda decay product).
   const int nPA   = sk::NPA();
-  const int nGen  = static_cast<int>(gen.handles.size());
   const auto& v2p = tracking.vecp_to_particle;
+  const auto& particleOfTrack = gen.particleOfSimulatedTrack;
 
   for (int j = 1; j <= nPA; ++j) {
     if (j >= static_cast<int>(v2p.size())) break;
     const int particle_idx = v2p[j];
     if (particle_idx < 0) continue;
-    const int ist = sk::IPAST(j);
-    if (ist <= 0) continue;
-    const int ilu = sk::ISTLU(ist);
-    if (ilu <= 0 || ilu > nGen) continue;
+    const int simulatedTrack = sk::IPAST(j);
+    if (simulatedTrack < 1) continue;
+    if (simulatedTrack >= static_cast<int>(particleOfTrack.size())) continue;
 
     auto link = links.create();
     link.setFrom(tracking.particle_handles[particle_idx]);
-    link.setTo  (gen.handles[ilu - 1]);
+    link.setTo  (particleOfTrack[simulatedTrack]);
     link.setWeight(1.0f);
   }
 
-  put(std::move(links), "TBL", "RecoToGen", Provenance::Transcribed);
+  put(std::move(links), "TBL", "RecoToMC", Provenance::Transcribed);
 }
 
 }  // namespace delphi_edm4hep::truth

@@ -26,8 +26,8 @@ std::map<std::string, Provenance, std::less<>> g_seen;
 // of these asserts that its values are stored DST content.
 constexpr std::string_view kBankMnemonics[] = {
   "BSP",  "EL",   "ELID", "ELTR", "EMCA", "EMNC", "HAID", "HCAL",
-  "HCMU", "HCNC", "HCRO", "LUJ",  "MAIN", "MRIC", "MTPC", "MU",   "MUFI",
-  "MUID", "ODHI", "PHC",  "PHOT", "PXTD", "SSTC", "STIC", "TBL",  "TDHA",
+  "HCMU", "HCNC", "HCRO", "MAIN", "MRIC", "MTPC", "MU",   "MUFI",
+  "MUID", "ODHI", "PHC",  "PHOT", "PXTD", "SSTC", "STIC", "STSH", "TBL",  "TDHA",
   "TDID",
   "TDVD", "TEAD", "TEFA", "TEFB", "TEID", "TEOD", "TERB", "TERF", "TEST",
   "TETP", "TEVF", "TOF",  "TRAC", "TRAX", "V0",

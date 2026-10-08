@@ -19,6 +19,9 @@ namespace delphi_edm4hep::truth {
 // to bind each handle to a tracking::Output Particle handle).
 struct GenParticleResult {
   std::vector<edm4hep::MutableMCParticle> handles;
+  // MCParticle of each simulated track, by track number (entry 0 unused):
+  // its generator line's particle, or the particle DELSIM created.
+  std::vector<edm4hep::MutableMCParticle> particleOfSimulatedTrack;
 };
 
 }  // namespace delphi_edm4hep::truth
