@@ -218,9 +218,13 @@ void BtagWriter::emit()
     tag.addToParameters(static_cast<float>(aa::NLAYZ(i)));
     tag.addToParameters(static_cast<float>(aa::ISRT(i)));        // 0 = unused
     tag.addToParameters(static_cast<float>(attached ? 1 : 0));
-    // [11..19] jet / hemisphere / sign bookkeeping from AAJETS, AASCND, AAJESV
-    // and the AAMAIN status word. Appended after the original 11 so existing
-    // readers keep their indices.
+    // [11..21] jet / hemisphere / sign bookkeeping from AAJETS, AASCND,
+    // AAJESV and the AAMAIN status word. Appended after the original 11 so
+    // existing readers keep their indices; BtagCheckDomains.h names the slots.
+    // Everything here that refers to "the primary vertex" means AABTAG's own,
+    // emitted as AABTAG_PrimaryVertex (POSVX in AAMNVX) -- the beam-spot
+    // constrained fit AABTAG performs for itself. It is NOT PV_PrimaryVertex,
+    // which is DELPHI's standard vertex, and the two differ by order 10 um.
     tag.addToParameters(static_cast<float>(aa::IJET(i)));        // CombinedTagRow row, 1-based
     tag.addToParameters(static_cast<float>(aa::ITHR(i)));        // thrust hemisphere (1/2)
     // PHIV is not a sign, despite what the AAMAIN header says. AASIGN fills it
@@ -229,10 +233,18 @@ void BtagWriter::emit()
     // between the track helix and the jet axis and returns `al`: the signed
     // distance ALONG THE JET AXIS, in cm, from the primary vertex to that
     // point. Its sign is what signs the impact parameter -- which is all the
-    // DELPHI comment ever meant -- and AADCAJ's own header says so. Left in cm
-    // deliberately: the value degrades to a bare +-1 whenever the distance
-    // below is a placeholder, so it is not a length everywhere.
-    tag.addToParameters(aa::PHIV(i));
+    // DELPHI comment ever meant -- and AADCAJ's own header says so.
+    //
+    // It is emitted as two slots rather than one, because the quantity is two
+    // things at once: wherever AASGNT abandons the calculation (same rows as
+    // the NaN distance below) it degrades to a bare +-1 carrying only a sign,
+    // and a blanket cm -> mm would turn that into a +-10 that reads as a 1 cm
+    // measurement. So the sign goes in its own slot, valid on every row, and
+    // the length goes in mm like every other length in the file, NaN on
+    // exactly the rows where DISTJ is NaN.
+    const bool jetDistMeasured = aa::DISTJ(i) != 0.f && aa::ERRTJ(i) < 100.f;
+    tag.addToParameters(std::signbit(aa::PHIV(i)) ? -1.f : 1.f);
+    tag.addToParameters(jetDistMeasured ? static_cast<float>(aa::PHIV(i) * kCm2Mm) : kNaN);
     tag.addToParameters(aa::RPDT(i));                            // rapidity w.r.t. its jet
     // AASGNT abandons the track-jet distance in two places and leaves a
     // placeholder rather than a measurement: a track with no VD z-hits or a
@@ -242,7 +254,6 @@ void BtagWriter::emit()
     // data), and their err = 1000 mm drags the mean of the column from 0.27 mm
     // to 336 mm. Map both to NaN, as prob() does for PSCBTG's 2.0; in those
     // rows only the SIGN of PHIV above carries information.
-    const bool jetDistMeasured = aa::DISTJ(i) != 0.f && aa::ERRTJ(i) < 100.f;
     tag.addToParameters(jetDistMeasured ? static_cast<float>(aa::DISTJ(i) * kCm2Mm) : kNaN);
     tag.addToParameters(jetDistMeasured ? static_cast<float>(aa::ERRTJ(i) * kCm2Mm) : kNaN);
     tag.addToParameters(static_cast<float>(aa::INSV(i)));        // SV hypothesis using it (+100 flags)
@@ -255,6 +266,11 @@ void BtagWriter::emit()
     // in 70k tracks of 94c data -- see docs/README.md.
     tag.addToParameters(static_cast<float>(aa::IST(i)));
     tag.addToParameters(static_cast<float>(aa::IJSV(i)));        // ditto, after the SV redefinition
+    // LUTHRU's track index. The value points into a JETSET record this
+    // converter does not ship, so only ILUND != 0 is meaningful: it says the
+    // track entered the thrust and oblateness calculation, without which
+    // AABTAG_ThrustValue / ThrustAxis and Oblateness cannot be reproduced.
+    tag.addToParameters(static_cast<float>(aa::ILUND(i)));
 
     if (auto it = lpa_to_pa.find(aa::IADTR(i)); it != lpa_to_pa.end()) {
       if (const auto particle = particleForPa(it->second)) {

@@ -17,13 +17,21 @@ inline constexpr int kMaxTracks = 100;
 inline constexpr int kMaxPrimaryVertexNdf = 2 * kMaxTracks;
 inline constexpr std::int32_t kMaxVdHits = 6;
 inline constexpr std::int32_t kMaxVdLayers = 3;
+// AABTAG array caps, from AabtagCommons.h: NJET <= 10 jets, and INSV holds a
+// secondary-vertex hypothesis index (<= 20) optionally offset by 100.
+inline constexpr std::int32_t kMaxJets = 10;
+inline constexpr std::int32_t kMaxSvHypotheses = 20;
+inline constexpr std::int32_t kMaxInsv = kMaxSvHypotheses + 100;
 
 /// Slot layout of the `AABTAG_TrackTag` `parameters` VectorMember.
+///
+/// Every slot here that refers to the primary vertex means AABTAG's own,
+/// emitted as `AABTAG_PrimaryVertex`, not `PV_PrimaryVertex`.
 ///
 /// EDM4hep types `parameters` as a bare float vector, so slot meanings and
 /// units are convention: declared once here, appended in this order by
 /// `Btag.cpp`, read by name by `delphi_btag_check`, with `kTrCount` keeping
-/// the two in step. Slots [0..10] come from AABTGS / AASIGN, [11..19] from
+/// the two in step. Slots [0..10] come from AABTGS / AASIGN, [11..21] from
 /// AAJETS / AASCND / AAJESV; the DELPHI mnemonic locates each in
 /// `aabtagxx.car`. Unmarked slots are dimensionless.
 enum TrackTagIndex : std::size_t {
@@ -40,15 +48,21 @@ enum TrackTagIndex : std::size_t {
   kTrAttached,   ///< 1 if AABTAG attached the track to its primary vertex
   kTrIjet,       ///< `IJET` `AABTAG_CombinedTagRow` row, 1-based
   kTrIthr,       ///< `ITHR` thrust hemisphere (1 or 2)
-  kTrPhiv,       ///< `PHIV` signed distance along the jet axis, cm -- not mm
-                 ///< like the rest; exactly +-1 wherever #kTrDistj is NaN,
-                 ///< carrying only a sign there
+  kTrPhivSign,   ///< sign of `PHIV`, exactly +1 or -1; the sign of the
+                 ///< impact parameter, valid on every row
+  kTrPhivDist,   ///< `PHIV` as a length: signed distance along the jet axis
+                 ///< from AABTAG's primary vertex to the track's point of
+                 ///< closest approach to that axis, mm; NaN on exactly the
+                 ///< rows where #kTrDistj is NaN, where AASGNT left only a sign
   kTrRpdt,       ///< `RPDT` track rapidity with respect to its jet
   kTrDistj,      ///< `DISTJ` 3-D track-jet distance, mm; NaN if not computed
   kTrErrtj,      ///< `ERRTJ` error on #kTrDistj, mm; NaN on the same rows
   kTrInsv,       ///< `INSV` SV hypothesis using the track (+100 flags)
   kTrIst,        ///< `IST` track-quality code (AASTRK / AASLCT / AAIMPC)
   kTrIjsv,       ///< `IJSV` jet after the SV redefinition
+  kTrIlund,      ///< `ILUND` index into LUTHRU's JETSET record, which is not
+                 ///< shipped: only != 0 is meaningful, saying the track
+                 ///< entered the thrust and oblateness calculation
   kTrCount       ///< number of slots; the expected `parameters` size
 };
 
@@ -80,6 +94,46 @@ inline bool isValidUsedForTag(std::int32_t value) { return value >= 0; }
 
 inline bool isValidAttachedFlag(std::int32_t value) {
   return value == 0 || value == 1;
+}
+
+// A jet index, or 0 where AABTAG assigned none.
+inline bool isValidJetIndex(std::int32_t value) {
+  return value >= 0 && value <= kMaxJets;
+}
+
+// ITHR is 1 or 2, or 0 before AATHRS has assigned a hemisphere.
+inline bool isValidHemisphere(std::int32_t value) {
+  return value >= 0 && value <= 2;
+}
+
+// INSV is +-hypothesis, optionally +-100 to flag a track used in the fit.
+inline bool isValidInsv(std::int32_t value) {
+  const auto wide = static_cast<std::int64_t>(value);
+  return (wide < 0 ? -wide : wide) <= static_cast<std::int64_t>(kMaxInsv);
+}
+
+// Every value IST takes in aabtagxx.car: AASTRK's initial -99; AASLCT's -90 /
+// -99 / -98 and its 99 for a track outside the user list; AAIMPC's 10; and
+// AAK0LS's V0 daughter codes. Listed from the assignment sites rather than
+// from observed data, so a value outside this set really is corruption.
+inline bool isValidTrackStatus(std::int32_t value) {
+  switch (value) {
+    case -99: case -98: case -90: case 10:
+    case 99: case 200: case 300: case 400:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The sign slot is exactly +-1 by construction, on every row.
+inline bool isUnitSign(float value) { return value == 1.f || value == -1.f; }
+
+// PHIV's length and the track-jet distance are a measurement or a placeholder
+// together: AASGNT fills or abandons them in the same branch, so a row where
+// one is NaN and the other is not means the pair has come apart.
+inline bool isConsistentPlaceholder(float phivDist, float distj) {
+  return std::isnan(phivDist) == std::isnan(distj);
 }
 
 // The legacy VD count arrays may be negated to mark a rejected track. Avoid

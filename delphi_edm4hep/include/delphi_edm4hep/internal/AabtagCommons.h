@@ -164,7 +164,18 @@ extern "C" {
 //   NJET   number of jets (<= 10)
 //   PJET   jet 4-momenta (px, py, pz, E)
 //   IJET   jet number of each track; ITHR its thrust hemisphere (1/2)
-//   PHIV   impact-parameter sign of each track (+1 / -1)
+//   PHIV   signed distance ALONG THE JET AXIS, in cm, from the primary vertex
+//          to the track's point of closest approach to that axis (POINTF's
+//          `al`, reached through AASGNT / AADCAJ / AADIST). Its SIGN is the
+//          sign of the impact parameter, which is all the DELPHI header
+//          "sign of impact parameter" ever meant. Where AASGNT abandons the
+//          calculation -- no VD z-hits, a bad primary-vertex z-covariance, or
+//          AADCAJ's bail-out on a null jet momentum -- it degrades to a bare
+//          +-1 and DISTJ / ERRTJ carry placeholders.
+//   ILUND  index of the track in the JETSET record LUTHRU built when it
+//          computed THRVAL / OBLVAL. The value indexes a record this converter
+//          does not ship, so only ILUND != 0 is meaningful: it says the track
+//          entered the thrust and oblateness calculation.
 //   THRVAL / OBLVAL  thrust and oblateness
 //   DISTJ / ERRTJ    3-D track-jet distance and its error (cm)
 //   RPDT   track rapidity with respect to its jet
@@ -365,6 +376,7 @@ inline std::int32_t& NJET  ()           { return aajets_.njet; }
 inline float&        PJET  (int i, int j){ return aajets_.pjet [j - 1][i - 1]; }
 inline std::int32_t& IJET  (int i)      { return aajets_.ijet  [i - 1]; }
 inline float&        PHIV  (int i)      { return aajets_.phiv  [i - 1]; }
+inline std::int32_t& ILUND (int i)      { return aajets_.ilund [i - 1]; }
 inline float&        THRVAL()           { return aajets_.thrval; }
 inline float&        OBLVAL()           { return aajets_.oblval; }
 inline std::int32_t& ITHR  (int i)      { return aajets_.ithr  [i - 1]; }

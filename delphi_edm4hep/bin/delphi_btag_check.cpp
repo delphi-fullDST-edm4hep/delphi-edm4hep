@@ -223,6 +223,31 @@ int main(int argc, char** argv) {
           ++stats.tagDomainFailures;
         if (!domain::isValidUsedForTag(static_cast<std::int32_t>(params[domain::kTrIsrt]))) ++stats.tagDomainFailures;
         if (!domain::isValidAttachedFlag(static_cast<std::int32_t>(params[domain::kTrAttached]))) ++stats.tagDomainFailures;
+        // The AAJETS / AASCND / AAJESV words. Each bound below comes from the
+        // algorithm -- an array cap or the list of codes a variable is
+        // assigned in aabtagxx.car -- rather than from the range a sample
+        // happens to show, so a failure here is corruption and not a tail.
+        if (!domain::isValidJetIndex(static_cast<std::int32_t>(params[domain::kTrIjet])) ||
+            !domain::isValidJetIndex(static_cast<std::int32_t>(params[domain::kTrIjsv])))
+          ++stats.tagDomainFailures;
+        if (!domain::isValidHemisphere(static_cast<std::int32_t>(params[domain::kTrIthr]))) ++stats.tagDomainFailures;
+        if (!domain::isUnitSign(params[domain::kTrPhivSign])) ++stats.tagDomainFailures;
+        if (!domain::isValidInsv(static_cast<std::int32_t>(params[domain::kTrInsv]))) ++stats.tagDomainFailures;
+        if (!domain::isValidTrackStatus(static_cast<std::int32_t>(params[domain::kTrIst]))) ++stats.tagDomainFailures;
+        if (!domain::isFinite(params[domain::kTrRpdt])) ++stats.tagDomainFailures;
+        // DISTJ / ERRTJ / the PHIV length are a measurement or a placeholder
+        // together, so NaN is expected and only the pairing is enforced: a
+        // finite distance must be non-negative and carry a positive error.
+        if (!domain::isConsistentPlaceholder(params[domain::kTrPhivDist], params[domain::kTrDistj]) ||
+            !domain::isConsistentPlaceholder(params[domain::kTrErrtj], params[domain::kTrDistj]))
+          ++stats.tagDomainFailures;
+        if (!std::isnan(params[domain::kTrDistj]) &&
+            (!domain::isNonnegativeFinite(params[domain::kTrDistj]) ||
+             !domain::isPositiveFinite(params[domain::kTrErrtj]) ||
+             !domain::isFinite(params[domain::kTrPhivDist])))
+          ++stats.tagDomainFailures;
+        // ILUND is deliberately unchecked: the value indexes a JETSET record
+        // this converter does not ship, so any bound would be a guess.
         if (attached) ++attachedRows;
         if (!tag.getParticle().isAvailable()) ++stats.unresolvedParticles;
       }
