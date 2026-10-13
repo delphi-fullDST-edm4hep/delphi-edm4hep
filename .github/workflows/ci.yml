@@ -23,7 +23,7 @@ jobs:
         # stable     = whatever the stable channel currently resolves to
         channel: [production, stable]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Mount cvmfs (DELPHI + key4hep)
         uses: cvmfs-contrib/github-action-cvmfs@v5
@@ -51,7 +51,7 @@ jobs:
 
       - name: Publish the build for the data test
         if: matrix.channel == 'production'     # stable is a build-only canary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build
           path: |
@@ -84,8 +84,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with: { name: build, path: build }
       - run: chmod +x build/delphi_sdst_pass build/delphi_fdst_pass build/delphi_btag_check
       - name: Convert and compare against the blessed references
@@ -101,12 +101,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the collection map and the API docs
         run: bash .github/scripts/docs-build.sh
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/html
 
@@ -126,4 +126,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

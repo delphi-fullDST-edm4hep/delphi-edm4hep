@@ -18,7 +18,7 @@ jobs:
       contents: read
       issues: write      # scheduled-status.sh keeps the tracking issue
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Mount cvmfs (DELPHI + key4hep nightlies)
         uses: cvmfs-contrib/github-action-cvmfs@v5

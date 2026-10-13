@@ -22,7 +22,7 @@ jobs:
   bump-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Mount cvmfs (DELPHI + key4hep)
         uses: cvmfs-contrib/github-action-cvmfs@v5
@@ -65,7 +65,7 @@ jobs:
 
       - name: Open bump PR
         if: steps.cmp.outputs.candidate != ''
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           base: dev
           branch: bump/key4hep-${{ steps.cmp.outputs.candidate }}
