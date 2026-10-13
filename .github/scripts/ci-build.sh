@@ -28,13 +28,14 @@ set --
 # OS bits the toolchains expect from the base system:
 #   glibc-devel                 dev files for the compiler
 #   zlib-devel libxcrypt-devel  -lz / -lcrypt for the DELPHI Fortran link line
-#   lz4-devel                   Arrow, pulled in by podio, resolves lz4 from
-#                               the system; the LCG view does not carry it
+#   lz4-devel libzstd-devel     Arrow, pulled in by podio, resolves lz4 and
+#                               zstd from the system; the LCG view carries
+#                               neither
 #   which make                  the LCG view resolves CC/CXX/FC through `which`
 #                               and ships no make
 # Everything else (gcc, cmake, ROOT, ...) comes from cvmfs.
 dnf install -y -q --setopt=install_weak_deps=False \
-  glibc-devel zlib-devel libxcrypt-devel lz4-devel which make
+  glibc-devel zlib-devel libxcrypt-devel lz4-devel libzstd-devel which make
 
 # DELPHI first, then key4hep (same order as the README). The DELPHI profile
 # prints harmless 'gcc: command not found' probe warnings in a bare container.
