@@ -211,6 +211,8 @@ extern AajetsCommon aajets_;
 //   CHI2SV chi2 of the SV impact parameter with respect to the PV (2 d.o.f.
 //          in 3-D; the R-phi-only value is scaled by 2 to be comparable)
 //   DCASEC (d_rphi, d_z, var_rphi, cov_rphi_z, var_z) of the SV w.r.t. the PV
+//          (AADCAN, with POSVX); d_z is PV_z minus the SV line's z, so it
+//          has the opposite sign to an EDM4hep Z0 (see Btag.cpp)
 //   INSV   per track: index of the hypothesis that uses it (+100 flags)
 //   JETSV  jet of the hypothesis; IF3DSV 1 if the fit was 3-D
 struct AascndCommon {

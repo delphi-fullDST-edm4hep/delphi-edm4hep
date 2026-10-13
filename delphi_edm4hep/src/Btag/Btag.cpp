@@ -348,13 +348,20 @@ void BtagWriter::emitCombinedTag(bool valid,
   }
 
   // ---- secondary-vertex hypotheses (AASCND) ------------------------------
+  // "PV" below is AABTAG's own primary vertex, emitted as AABTAG_PrimaryVertex
+  // (POSVX in AAMNVX, which AAFSEC hands to AADCAN) -- not PV_PrimaryVertex.
   // parameters: [0] ITSEC  [1] NSEC  [2] NSVRT  [3] NRAP
   //   [4] JETSV, the CombinedTagRow row this hypothesis belongs to (1-based)
   //   [5] IF3DSV  [6] PRBSEC  [7] CHI2SV  [8] CSEC
   //   [9..12] PSEC px py pz E (GeV)   [13..16] PRAP px py pz E (GeV)
   //   [17,18] TPHSEC theta, phi of the PV->SV direction (rad)
-  //   [19..21] VTPHS its covariance   [22..26] DCASEC d_rphi d_z (mm),
-  //   var_rphi cov var_z (mm^2)
+  //   [19..21] VTPHS its covariance
+  //   [22..26] DCASEC d_rphi d_z (mm), var_rphi cov var_z (mm^2): the impact
+  //   parameters of the SV pseudo-particle w.r.t. the PV, in the EDM4hep D0 /
+  //   Z0 convention of PV_Tracks_d0PV / z0PV. AADCAN's dr = (PV - SV) .
+  //   (sin phi, -cos phi) already is D0. Its dz is PV_z minus the z of the SV
+  //   line at closest approach, the negative of Z0, so d_z and the r-phi/z
+  //   covariance are negated here.
   //   [27 .. 27+NSEC-1]  ISEC, signed AABTAG track indices (see AASCND)
   //   [27+NSEC .. +NRAP-1]  IRAP, AABTAG track indices of the rapidity tracks
   edm4hep::VertexCollection svCol;
@@ -390,9 +397,9 @@ void BtagWriter::emitCombinedTag(bool valid,
     sv.addToParameters(aa::TPHSEC(2, h));
     for (int i = 1; i <= 3; ++i) sv.addToParameters(aa::VTPHS(i, h));
     sv.addToParameters(static_cast<float>(aa::DCASEC(1, h) * kCm2Mm));
-    sv.addToParameters(static_cast<float>(aa::DCASEC(2, h) * kCm2Mm));
+    sv.addToParameters(static_cast<float>(-aa::DCASEC(2, h) * kCm2Mm));
     sv.addToParameters(aa::DCASEC(3, h) * kCm2Mm2_f);
-    sv.addToParameters(aa::DCASEC(4, h) * kCm2Mm2_f);
+    sv.addToParameters(-aa::DCASEC(4, h) * kCm2Mm2_f);
     sv.addToParameters(aa::DCASEC(5, h) * kCm2Mm2_f);
     for (int k = 1; k <= nsec; ++k) {
       const int idx = aa::ISEC(k, h);
