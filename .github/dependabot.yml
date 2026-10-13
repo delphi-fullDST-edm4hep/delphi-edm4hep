@@ -1,0 +1,15 @@
+# Keeps the actions used by .github/workflows/ current. The key4hep stack is
+# tracked separately by bump-check.yml, which builds a candidate release before
+# proposing it; nothing else in the repository is a versioned dependency.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR per week for all action bumps rather than one per action.
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

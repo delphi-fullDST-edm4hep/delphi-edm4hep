@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write      # scheduled-status.sh keeps the tracking issue
     steps:
       - uses: actions/checkout@v4
 
@@ -40,3 +41,11 @@ jobs:
         run: |
           echo "key4hep \`nightly\` -> \`$(cat .key4hep-resolved 2>/dev/null || echo unknown)\`" \
             >> "$GITHUB_STEP_SUMMARY"
+
+      # Only scheduled runs speak for the nightly stack; a manual dispatch may
+      # be testing a branch and must not open or close the issue.
+      - name: Report to the tracking issue
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/scheduled-status.sh "${{ job.status }}"

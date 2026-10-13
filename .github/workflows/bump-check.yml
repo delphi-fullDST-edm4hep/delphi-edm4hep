@@ -16,6 +16,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write      # scheduled-status.sh keeps the tracking issue
 
 jobs:
   bump-check:
@@ -87,3 +88,12 @@ jobs:
             does not convert any DELPHI data, so a green run is **not** a physics
             validation of the new stack.
           delete-branch: true
+
+      # A red run here means the current stable release does not build, so
+      # production cannot move forward until it is fixed. Scheduled runs only,
+      # as in nightly.yml.
+      - name: Report to the tracking issue
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/scheduled-status.sh "${{ job.status }}"
