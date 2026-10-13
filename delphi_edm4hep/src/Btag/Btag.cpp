@@ -11,6 +11,7 @@
 
 #include "delphi_edm4hep/internal/AabtagCommons.h"
 #include "delphi_edm4hep/internal/AabtagStatus.h"
+#include "delphi_edm4hep/internal/AabtagSvFit.h"
 #include "delphi_edm4hep/internal/PaWalk.h"
 
 #include "skelana/functions.hpp"
@@ -302,8 +303,12 @@ void BtagWriter::emit()
 // Output (all Derived, bank AABTAG):
 //   SecondaryVertices  one Vertex per AAFSEC hypothesis, accepted or not
 //                      (parameters[0] = ITSEC says which); position mm,
-//                      covariance mm^2, chi2 = CHI2SV (2 d.o.f., see the
-//                      AASCND comment), particles = the fitted tracks.
+//                      covariance mm^2, particles = the fitted tracks. chi2
+//                      and ndf are those of AAFSEC's own vertex fit, which
+//                      AABTAG does not keep and AabtagSvFit.h recovers from
+//                      the fit call; NaN and 0 if no fit matches. CHI2SV, the
+//                      vertex's displacement significance, is in the
+//                      parameters.
 //   CombinedTagRow     one ParticleID per AABTAG jet, in jet order: type =
 //                      category JTAG, likelihood = X_jet, parameters as
 //                      documented below. AABTAG's own jets are deliberately
@@ -352,7 +357,9 @@ void BtagWriter::emitCombinedTag(bool valid,
   // (POSVX in AAMNVX, which AAFSEC hands to AADCAN) -- not PV_PrimaryVertex.
   // parameters: [0] ITSEC  [1] NSEC  [2] NSVRT  [3] NRAP
   //   [4] JETSV, the CombinedTagRow row this hypothesis belongs to (1-based)
-  //   [5] IF3DSV  [6] PRBSEC  [7] CHI2SV  [8] CSEC
+  //   [5] IF3DSV  [6] PRBSEC  [7] CHI2SV
+  //   [8] CSEC, always NaN: AABTAG never fills it (see the AASCND comment);
+  //   the slot is kept so the indices below do not move
   //   [9..12] PSEC px py pz E (GeV)   [13..16] PRAP px py pz E (GeV)
   //   [17,18] TPHSEC theta, phi of the PV->SV direction (rad)
   //   [19..21] VTPHS its covariance
@@ -376,8 +383,10 @@ void BtagWriter::emitCombinedTag(bool valid,
     sv.setCovMatrix({aa::SSEC(1, h) * kCm2Mm2_f, aa::SSEC(2, h) * kCm2Mm2_f,
                      aa::SSEC(3, h) * kCm2Mm2_f, aa::SSEC(4, h) * kCm2Mm2_f,
                      aa::SSEC(5, h) * kCm2Mm2_f, aa::SSEC(6, h) * kCm2Mm2_f});
-    sv.setChi2(aa::CHI2SV(h));
-    sv.setNdf(2);
+    const float vsec[3] = {aa::VSEC(1, h), aa::VSEC(2, h), aa::VSEC(3, h)};
+    const auto fit = aa::svFitAt(vsec);
+    sv.setChi2(fit ? fit->chi2 : kNaN);
+    sv.setNdf(fit ? fit->ndf : 0);
     const int itsec = aa::ITSEC(h);
     if (itsec >= 0) ++nAccepted;
     const int nsec = std::clamp(aa::NSEC(h), 0, aa::kMaxSvTracks);
@@ -390,7 +399,7 @@ void BtagWriter::emitCombinedTag(bool valid,
     sv.addToParameters(static_cast<float>(aa::IF3DSV(h)));
     sv.addToParameters(aa::PRBSEC(h));
     sv.addToParameters(aa::CHI2SV(h));
-    sv.addToParameters(aa::CSEC(h));
+    sv.addToParameters(kNaN);                                    // CSEC
     for (int i = 1; i <= 4; ++i) sv.addToParameters(aa::PSEC(i, h));
     for (int i = 1; i <= 4; ++i) sv.addToParameters(aa::PRAP(i, h));
     sv.addToParameters(aa::TPHSEC(1, h));

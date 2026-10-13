@@ -209,7 +209,14 @@ extern AajetsCommon aajets_;
 //          covariance
 //   PRBSEC track probability of the vertex tracks; NSVRT tracks that fitted
 //   CHI2SV chi2 of the SV impact parameter with respect to the PV (2 d.o.f.
-//          in 3-D; the R-phi-only value is scaled by 2 to be comparable)
+//          in 3-D; the R-phi-only value is scaled by 2 to be comparable).
+//          This is a displacement significance, not the vertex fit: AAFSEC
+//          fits the vertex (ccFVT3 / ccFV23) but its `chi2sv(nhypo) = chi2vs`
+//          is commented out, so the fit's chi2 is not kept in any common
+//          (the converter recovers it from the fit call, see AabtagSvFit.h)
+//   CSEC   cosine of the angle between the momentum and the PV->SV direction,
+//          never filled: its assignment in AAFSEC is commented out too, so
+//          it stays 0
 //   DCASEC (d_rphi, d_z, var_rphi, cov_rphi_z, var_z) of the SV w.r.t. the PV
 //          (AADCAN, with POSVX); d_z is PV_z minus the SV line's z, so it
 //          has the opposite sign to an EDM4hep Z0 (see Btag.cpp)
