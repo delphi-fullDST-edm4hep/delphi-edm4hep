@@ -282,7 +282,9 @@ extern AactvrCommon aactvr_;
 
 // COMMON /AACTRS/ — combined-tag results.
 //   JTAG(j)  jet category: 1 has an SV, 2 no SV but >= 2 significant
-//            tracks, 3 lifetime only, 0 not tagged
+//            tracks, 3 lifetime only, 4 lifetime only with no track in the
+//            rapidity variable (AACMNS sets it when NTRS = 0), 0 not tagged.
+//            AACMZ0 weights 4 as 3, and counts every JTAG > 0 as tagged
 //   XEFFJ(j) X_jet = -log10 y (prefilled -5 when not computed)
 //   XEFFEV   X_ev from AACMZ0 (sum of the two largest X_jet)
 struct AactrsCommon {

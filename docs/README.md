@@ -183,8 +183,9 @@ stored bank is read back beside it, so both tags are always emitted (see
   per event) is a separate entry that `PSFBTG` never calls. `BtagWriter`
   calls both after `PSFBTG`, in the sequence BSAURUS's `PXBTAG('RUN')` uses,
   and emits `AABTAG_SecondaryVertices`, `AABTAG_CombinedTagRow`,
-  `AABTAG_CombinedTagEvent` / `CombinedTagHemisphere`, plus nine extra
-  per-track words on `AABTAG_TrackTag` (layouts in `Btag.cpp`).
+  `AABTAG_CombinedTagEvent` / `CombinedTagHemisphere`, plus eleven extra
+  per-track words on `AABTAG_TrackTag`. The TrackTag slots are named in
+  `BtagCheckDomains.h`; the other layouts are in `Btag.cpp`.
 - **Two per-track words of `AABTAG_TrackTag` are not what the DELPHI headers
   suggest.** `PHIV` is documented in `AAMAIN` as "the sign of impact
   parameter", but `AASIGN` fills it through `AASGNT`/`AADCAJ`/`AADIST`/`POINTF`

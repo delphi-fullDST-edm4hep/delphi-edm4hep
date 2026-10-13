@@ -421,11 +421,17 @@ void BtagWriter::emitCombinedTag(bool valid,
   //   [30..33] PJSV px py pz E, the jet direction after the SV redefinition
   //   [34 .. 34+4*NTRS-1]  per rapidity track: INVTS (AABTAG track index),
   //   TGVT (rapidity), RTTVQI, RTTVCI
+  // JTAG, also the row's type: 1 has an SV, 2 no SV but >= 2 significant
+  // tracks, 3 lifetime only, 4 lifetime only with no rapidity track (NTRS =
+  // 0), 0 not tagged. Category 4 is common (70% of rows on the 94c data
+  // identity sample, 15% on the 94c qqbar simulation one), and AACMZ0 treats
+  // it as 3.
   // The ParticleID carries no particle relation: the object it would point
   // at is exactly the jet we are not emitting.
   edm4hep::ParticleIDCollection jetTags;
-  // Largest X_jet per thrust hemisphere over the tagged jets, as PXBTAG
-  // does for BTAG(29,30); NaN when the hemisphere has no tagged jet.
+  // Largest X_jet per thrust hemisphere over the tagged jets (JTAG > 0, so
+  // including 4), as PXBTAG does for BTAG(29,30); NaN when the hemisphere has
+  // no tagged jet.
   float hemiBest[2] = {kNaN, kNaN};
   for (int j = 1; j <= njet; ++j) {
     // Collection position + 1 is the AABTAG jet number.
