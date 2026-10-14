@@ -1,6 +1,6 @@
 // Vertex domain — implementation S4.
 //
-// Reads PSCVTX (reco PV chain + simulation PV chain), PSCBSP (beam spot),
+// Reads PSCVTX (reco PV chain + simulation PV chain), direct beamspot state,
 // PSCRV0 (Delphi-official V0), PSCPHC (photon conversions). All positions
 // converted from DELPHI cm to EDM4hep mm. Vertex-to-Particle relations are
 // collection-specific: the reco PV chain carries DELPHI's outgoing PA
@@ -8,9 +8,9 @@
 // daughters.
 
 #include "delphi_edm4hep/Vertex/Vertex.h"
+#include "delphi_edm4hep/Event/EventInfo.h"
 #include "delphi_edm4hep/internal/BeamSpotStatus.h"
 
-#include "skelana/pscbsp.hpp"
 #include "skelana/pscphc.hpp"
 #include "skelana/pscrv0.hpp"
 #include "skelana/pscvtx.hpp"
@@ -288,24 +288,25 @@ void VertexWriter::emit()
     statusBits.push_back(sk::KVTX(17, j));
   }
 
-  // ----- Beam spot (PSCBSP) -----
+  // ----- Beam spot (direct VD package result) -----
   // Always one entry. NaN position and covariance when there is no usable
   // database entry (see internal/BeamSpotStatus.h).
   {
-    const bool usable = beamspot::positionUsable(sk::IERRBS);
+    const auto& beamSpot = event::current().beamSpot;
+    const bool usable = beamspot::positionUsable(beamSpot.errorCode);
     const float nan = std::numeric_limits<float>::quiet_NaN();
     auto pos = [&](int i) {
-      return usable ? sk::XYZBS(i) * static_cast<float>(kCm2Mm) : nan;
+      return usable ? beamSpot.positionCm[i] * static_cast<float>(kCm2Mm) : nan;
     };
     auto var = [&](int i) {
-      return usable ? sk::DXYZBS(i) * sk::DXYZBS(i) * kCm2Mm2_f : nan;
+      return usable ? beamSpot.sigmaCm[i] * beamSpot.sigmaCm[i] * kCm2Mm2_f : nan;
     };
     auto bs = bspCol.create();
     bs.setPrimary(false);
     bs.setAlgorithmType(kAlgoBeamSpot);
-    bs.setPosition({pos(1), pos(2), pos(3)});
-    // PSCBSP stores per-axis sigmas; we diagonalise (no off-diag info).
-    bs.setCovMatrix({var(1), 0.f, var(2), 0.f, 0.f, var(3)});
+    bs.setPosition({pos(0), pos(1), pos(2)});
+    // VDBSPT returns per-axis sigmas; we diagonalise (no off-diag info).
+    bs.setCovMatrix({var(0), 0.f, var(1), 0.f, 0.f, var(2)});
   }
 
   // ----- Delphi-official V0 candidates (PSCRV0) -----

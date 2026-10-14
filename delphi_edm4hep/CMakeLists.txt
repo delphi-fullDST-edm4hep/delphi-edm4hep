@@ -63,7 +63,7 @@ message(STATUS
   "key4hep: EDM4hep ${EDM4HEP_VERSION}, podio ${podio_VERSION}, ROOT ${ROOT_VERSION}")
 
 # DELPHI almalinux-9 Fortran libraries (custom find module).
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 find_package(DelphiAL9 REQUIRED)
 
 # ---------------------------------------------------------------------------
@@ -82,8 +82,10 @@ add_library(delphi_edm4hep
   src/Helix.cpp
   src/TeBank.cpp
   src/PhdstHarness.cpp
+  src/Event/EventInfo.cpp
   src/Event/Event.cpp
   src/Vertex/Vertex.cpp
+  src/Btag/BtagInfo.cpp
   src/Btag/Btag.cpp
   src/Tracking/TrackElements.cpp
   src/Tracking/Tracking.cpp
@@ -114,7 +116,7 @@ add_library(delphi_edm4hep
 )
 target_include_directories(delphi_edm4hep
   PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(delphi_edm4hep
@@ -163,7 +165,7 @@ target_link_libraries(delphi_bs_fit
 # Integrity/provenance check used by resumable b-tag conversion campaigns.
 # Standalone EDM4hep/podio/ROOT tool: it does not load the DELPHI runtime.
 add_executable(delphi_btag_check bin/delphi_btag_check.cpp)
-target_include_directories(delphi_btag_check PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(delphi_btag_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(delphi_btag_check
   PRIVATE EDM4HEP::edm4hep podio::podio podio::podioRootIO ROOT::Core ROOT::RIO
 )
@@ -171,7 +173,7 @@ target_link_libraries(delphi_btag_check
 # ---------------------------------------------------------------------------
 # Tests (subtask 5+; for now just smoke).
 enable_testing()
-if(EXISTS ${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)
   add_subdirectory(tests)
 endif()
 

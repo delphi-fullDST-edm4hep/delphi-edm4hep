@@ -1,4 +1,4 @@
-// Event domain: PHCIII + PSCEVT + PXCONS + PSCBSP + per-event B field.
+// Event domain: PHCIII + direct pilot/PA/VD queries + per-event B field.
 // EventWriter emits per-event Frame parameters under "<prefix>_EVT_*".
 
 #pragma once

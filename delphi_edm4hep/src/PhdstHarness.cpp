@@ -14,6 +14,8 @@
 #include "delphi_edm4hep/internal/DstCensus.h"
 
 #include "delphi_edm4hep/CollectionWriter.h"
+#include "delphi_edm4hep/Btag/BtagInfo.h"
+#include "delphi_edm4hep/Event/EventInfo.h"
 
 #include "phdst/functions.hpp"   // ph::PHSET, phdst_, ph::IIIRUN etc.
 #include "phdst/phciii.hpp"
@@ -85,8 +87,10 @@ void setSkelanaFlags() {
   sk::IFLRVR = 111;
   sk::IFLSIM = 1;
   sk::IFLBSP = 2;
-  // AABTAG runs on every event: PSFBTG fills the per-track b-tag commons, and
-  // the stored BTAG bank is read separately, so both tags are emitted.
+  // AABTAG runs on every event while the remaining monolithic PSBEG sequence
+  // is still in use. The converter no longer reads PSCBSP and reads the stored
+  // BTAG bank directly; moving the recalculation itself requires splitting
+  // PSBEG so AABTGS retains its exact position in the event sequence.
   // IFLPVT = 0 keeps SKELANA's primary vertex intact; AABTAG's own vertex is
   // emitted as a separate collection.
   sk::IFLBTG = 2;
@@ -163,6 +167,7 @@ void on_user00() noexcept {
     ph::PHSET("FPE", 0);
     sk::PSINI();
     setSkelanaFlags();
+    event::initialize();
 
     if (g_cfg.output.empty()) {
       std::cerr << "harness::on_user00: output path not set\n";
@@ -259,6 +264,12 @@ static void on_user02_impl() {
   // DELSIM's event 1 is a setup record that has a DST bank but no PV chain;
   // drop it so the output event count equals the number of physics events.
   if (g_n_seen == 1 && ph::LQ(ph::LDTOP - 1) == 0) return;
+
+  // Only query the direct DELPHI event services after the record guards.
+  // Header/setup records can lack pilot blocklets such as DANA and must not
+  // be treated as physics events.
+  event::refresh();
+  btag::refresh();
 
   podio::Frame frame;
 

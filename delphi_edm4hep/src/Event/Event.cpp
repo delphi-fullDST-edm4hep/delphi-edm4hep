@@ -1,50 +1,30 @@
 // EventWriter — implementation.
 //
-// Reads per-event scalars from the SKELANA / PHDST commons populated by PSBEG
-// and writes them into the Frame as named parameters under "<source>_EVT_*".
-// No bank walking — pure common-block reads.
+// Writes the direct DELPHI event context into the Frame as named parameters
+// under "<source>_EVT_*". EventInfo reproduces the required PSHEVT/PSBEAM
+// logic without reading SKELANA commons.
 //
 // The parameters fall into three groups by origin, declared separately below:
-// values copied from the DST pilot record, values SKELANA counts or sums for
-// itself, and the beam spot, which comes from an external database rather
-// than from the DST at all.
+// values copied from the DST pilot record, counts or sums reconstructed from
+// the PA chain, and the beam spot, which comes from an external database
+// rather than from the DST at all.
 
 #include "delphi_edm4hep/Event/Event.h"
+#include "delphi_edm4hep/Event/EventInfo.h"
 #include "delphi_edm4hep/internal/BeamSpotStatus.h"
 
 #include "phdst/functions.hpp"  // IPHPIC
 #include "phdst/phciii.hpp"
 #include "phdst/uxcom.hpp"      // IQ
 #include "phdst/uxlink.hpp"     // LDTOP
-#include "skelana/pscbsp.hpp"
-#include "skelana/pscevt.hpp"
 
-#include <cstddef>
 #include <limits>
 #include <stdexcept>
 #include <string>
 
-// PHGEN BPILOT subroutine (current event's solenoid B in Tesla,
-// curvature-to-momentum factor in GeV/cm). No header wrapper.
-extern "C" void bpilot_(float* btesla, float* bgevcm);
-
-// DSTQID (dstana) returns the DST processing identifier as "YYLN": two-digit
-// year, DELANA processing letter, short/mini DST number. gfortran passes the
-// character length as a hidden trailing argument.
-extern "C" void dstqid_(char* tag, std::size_t len);
-
 namespace ph = phdst;
-namespace sk = skelana;
 
 namespace {
-std::string processingTag() {
-  char buf[4] = {};
-  dstqid_(buf, sizeof(buf));
-  std::string tag(buf, sizeof(buf));
-  tag.erase(tag.find_last_not_of(' ') + 1);
-  return tag;
-}
-
 // Refuse the event, naming it. A writer that throws aborts the job through the
 // harness's callback guard, which marks the partial output unpublishable.
 [[noreturn]] void refuse(const std::string& what) {
@@ -55,7 +35,7 @@ std::string processingTag() {
 // The beam energy has a failure mode SKELANA does not report: it substitutes a
 // value and carries on, and the substitute reaches the output looking like a
 // measurement. (The beam spot's is handled in internal/BeamSpotStatus.h.)
-void checkEventIsUsable() {
+void checkEventIsUsable(const delphi_edm4hep::event::EventInfo& info) {
   // Without the DANA pilot blocklet the centre-of-mass energy is not read but
   // set to 91.250 GeV (skelana.car:2743-2748). That substitution cannot be
   // recognised from the energy itself — 91.250 is also the true stored value
@@ -67,8 +47,9 @@ void checkEventIsUsable() {
 
   // EBEAM = ECMAS/2 is both a track cut and a denominator in SKELANA; at zero
   // it rejects every charged track.
-  if (sk::ECMAS <= 0.f) {
-    refuse("centre-of-mass energy is " + std::to_string(sk::ECMAS) + " GeV");
+  if (info.centreOfMassEnergy <= 0.f) {
+    refuse("centre-of-mass energy is " +
+           std::to_string(info.centreOfMassEnergy) + " GeV");
   }
 }
 }  // namespace
@@ -76,7 +57,8 @@ void checkEventIsUsable() {
 namespace delphi_edm4hep::event {
 
 void EventWriter::emit() {
-  checkEventIsUsable();
+  const auto& info = current();
+  checkEventIsUsable(info);
 
   constexpr float kCm2Mm = 10.0f;
 
@@ -89,26 +71,24 @@ void EventWriter::emit() {
   stored("time",        ph::IIITIM);   // hhmmss
   stored("fillNumber",  ph::IIFILL);
   stored("experiment",  ph::IIIEXP);
-  stored("dstVersion",  sk::ISVER);
+  stored("dstVersion",  info.dstVersion);
 
   // Era identifiers. The processing tag selects the calibration SKELANA uses —
   // its first two characters pick the RICH refractive index — and the PXDST
   // version selects between algorithm generations.
-  stored("dstProcessingTag", processingTag());
+  stored("dstProcessingTag", info.processingTag);
   stored("pxdstVersion",     ph::LDTOP > 0 ? ph::IQ(ph::LDTOP + 3) : 0);
 
   // Centre-of-mass energy from the DANA pilot blocklet. SKELANA substitutes
   // 91.250 GeV when that blocklet is absent, which at LEP2 would be wrong by
   // more than a factor of two; check BeamSpotErrorCode and the energy itself
   // before relying on it.
-  stored("ECMS", sk::ECMAS);
+  stored("ECMS", info.centreOfMassEnergy);
 
   // Per-event solenoid field and the curvature-to-momentum factor, both from
   // the pilot record. pT [GeV/c] = BFieldGevPerCm / |omega_DELPHI [1/cm]|.
-  float btesla = 0.f, bgevcm = 0.f;
-  bpilot_(&btesla, &bgevcm);
-  stored("BField",         btesla);
-  stored("BFieldGevPerCm", bgevcm);
+  stored("BField",         info.magneticFieldTesla);
+  stored("BFieldGevPerCm", info.magneticFieldGevPerCm);
 
   // Multiplicities and summed energies counted by SKELANA over the PA chain
   // under cuts hard-coded in PSHEVT — a momentum, track-length, impact-
@@ -116,31 +96,31 @@ void EventWriter::emit() {
   // LVLOCK track selection. Two events with the same nCharged can therefore
   // disagree with a count made from MAIN_Particles and LVLOCK.
   auto counted = parameters("EVT", Provenance::Derived);
-  counted("hadronicTagTeam4", sk::IHAD4);
-  counted("nChargedTeam4",    sk::NCTR4);
-  counted("nCharged",         sk::NCTRK);
-  counted("nNeutral",         sk::NNTRK);
-  counted("EChargedTotal",    sk::ECHAR);
-  counted("ENeutralEM",       sk::EMNEU);
-  counted("ENeutralHad",      sk::EHNEU);
+  counted("hadronicTagTeam4", info.hadronicTagTeam4);
+  counted("nChargedTeam4",    info.nChargedTeam4);
+  counted("nCharged",         info.nCharged);
+  counted("nNeutral",         info.nNeutral);
+  counted("EChargedTotal",    info.chargedEnergy);
+  counted("ENeutralEM",       info.neutralEmEnergy);
+  counted("ENeutralHad",      info.neutralHadEnergy);
 
   // Beam spot from the per-processing database under $DELPHI_DAT, selected by
   // the DSTQID tag and looked up per run and file — not from the DST. For
   // simulation it is instead the generated interaction point plus a Gaussian
   // smear, so it follows the event rather than describing a beam. Without a
   // usable entry (BeamSpotErrorCode 2) position and widths are NaN.
-  const bool usable = beamspot::positionUsable(sk::IERRBS);
+  const bool usable = beamspot::positionUsable(info.beamSpot.errorCode);
   auto bs = [&](float cm) {
     return usable ? cm * kCm2Mm : std::numeric_limits<float>::quiet_NaN();
   };
   auto beamspot = parameters("EVT", Provenance::Derived);
-  beamspot("BeamSpotX",      bs(sk::XYZBS(1)));
-  beamspot("BeamSpotY",      bs(sk::XYZBS(2)));
-  beamspot("BeamSpotZ",      bs(sk::XYZBS(3)));
-  beamspot("BeamSpotSigmaX", bs(sk::DXYZBS(1)));
-  beamspot("BeamSpotSigmaY", bs(sk::DXYZBS(2)));
-  beamspot("BeamSpotSigmaZ", bs(sk::DXYZBS(3)));
-  beamspot("BeamSpotErrorCode", sk::IERRBS);
+  beamspot("BeamSpotX",      bs(info.beamSpot.positionCm[0]));
+  beamspot("BeamSpotY",      bs(info.beamSpot.positionCm[1]));
+  beamspot("BeamSpotZ",      bs(info.beamSpot.positionCm[2]));
+  beamspot("BeamSpotSigmaX", bs(info.beamSpot.sigmaCm[0]));
+  beamspot("BeamSpotSigmaY", bs(info.beamSpot.sigmaCm[1]));
+  beamspot("BeamSpotSigmaZ", bs(info.beamSpot.sigmaCm[2]));
+  beamspot("BeamSpotErrorCode", info.beamSpot.errorCode);
 }
 
 }  // namespace delphi_edm4hep::event

@@ -1,15 +1,12 @@
 #include "delphi_edm4hep/internal/AabtagTrackState.h"
 
+#include "delphi_edm4hep/Event/EventInfo.h"
 #include "delphi_edm4hep/internal/AabtagCommons.h"
 #include "delphi_edm4hep/internal/AabtagStatus.h"
-
-#include "skelana/pscbsp.hpp"
 
 #include <algorithm>
 #include <array>
 #include <limits>
-
-namespace sk = skelana;
 
 namespace delphi_edm4hep::aabtag {
 
@@ -20,7 +17,7 @@ constexpr float  kNotMeasured = std::numeric_limits<float>::quiet_NaN();
 
 std::unordered_map<int, int> lpaToTrack() {
   std::unordered_map<int, int> out;
-  const auto status = eventStatus(sk::IERRBS, IBAD());
+  const auto status = eventStatus(event::current().beamSpot.errorCode, IBAD());
   if (!status.valid || !status.algorithmInvoked) return out;
   const int ntrk = std::clamp(NTRK(), 0, kMaxTracks);
   for (int i = 1; i <= ntrk; ++i) out.emplace(IADTR(i), i);
