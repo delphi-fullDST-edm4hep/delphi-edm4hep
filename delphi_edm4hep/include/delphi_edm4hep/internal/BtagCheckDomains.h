@@ -34,6 +34,8 @@ inline constexpr std::int32_t kMaxInsv = kMaxSvHypotheses + 100;
 /// the two in step. Slots [0..10] come from AABTGS / AASIGN, [11..21] from
 /// AAJETS / AASCND / AAJESV; the DELPHI mnemonic locates each in
 /// `aabtagxx.car`. Unmarked slots are dimensionless.
+///
+/// @collection{AABTAG_TrackTag}
 enum TrackTagIndex : std::size_t {
   kTrProb = 0,   ///< `TRPR` lifetime probability
   kTrProbZ,      ///< `TRPRZ` the same, using z

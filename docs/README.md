@@ -175,41 +175,29 @@ stored bank is read back beside it, so both tags are always emitted (see
   functions.
 - `PSFBTG` pre-fills the PSCBTG probabilities with `2.0`, so **2.0 means "not
   computed"**, not a probability.
-- **AABTAG runs a secondary-vertex search on every event and never stores
-  it.** `AABTGS -> AASIGN -> AAFSEC` (per jet: pair seeds with chi2 < 4, grown
-  with delta-chi2 < 5, L/sigma > 4, L < 2.5 cm, V0 daughters excluded by
-  `AAK0LS`) fills the `AASCND` common; AASIGN only uses it to re-sign impact
-  parameters. The combined tag of DELPHI 97-094 (`AACMBT` per jet, `AACMZ0`
-  per event) is a separate entry that `PSFBTG` never calls. `BtagWriter`
-  calls both after `PSFBTG`, in the sequence BSAURUS's `PXBTAG('RUN')` uses,
-  and emits `AABTAG_SecondaryVertices`, `AABTAG_CombinedTagRow`,
-  `AABTAG_CombinedTagEvent` / `CombinedTagHemisphere`, plus eleven extra
-  per-track words on `AABTAG_TrackTag`. The TrackTag slots are named in
-  `BtagCheckDomains.h`; the other layouts are in `Btag.cpp`.
-- **Two per-track words of `AABTAG_TrackTag` are not what the DELPHI headers
-  suggest.** `PHIV` is documented in `AAMAIN` as "the sign of impact
-  parameter", but `AASIGN` fills it through `AASGNT`/`AADCAJ`/`AADIST`/`POINTF`
-  with the signed distance **along the jet axis**, in cm, from the primary
-  vertex to the track's point of closest approach to that axis; only its sign
-  signs the impact parameter. `IST` as we store it is the track-quality code
-  left by `AASTRK`/`AASLCT`/`AAIMPC` (`-98` no VD hits, `-90` passed an
-  NLAY/CHI2VD class, `10` within the impact-parameter significance cut, `-99`
-  the initial value), not `AAK0LS`'s V0 flags: `99` and `200`/`300`/`400` are
-  reachable in principle but did not occur in 70k tracks of 94c data, in 5910
-  of which the particle is a reconstructed V0 daughter.
-- **`DISTJ` / `ERRTJ` carry a "not computed" placeholder for a third of all
-  tracks** — `AASGNT` writes `dist = 0, err = 100 cm` when the track has no VD
-  z-hits or the primary vertex has a bad z-covariance, and `AADCAJ` bails out
-  with `dist = 0, err = sqrt(200) cm` on a null jet momentum. The converter
-  emits `NaN` for both in those rows (as it does for `PSCBTG`'s `2.0`);
-  unfiltered they move the mean of the error column from 0.27 mm to 336 mm.
-- **`AACMBT` consumes `RNDM` on simulation** (`AALINT` emulates lepton-ID
-  inefficiency with random drops when `nrun < 0`), and AABTAG's own MC
-  impact-parameter smearing (`AAPS9x`) draws from the same CERNLIB stream.
-  Without a guard the *next* event's lifetime tag changes. `BtagWriter`
-  brackets the call with `RDMOUT` / `RDMIN`; with that, every pre-existing
-  AABTAG output is bit-identical to a build that never calls the combined
-  tag (checked on 400 Z->bb MC events and a full 94c data file).
+- **AABTAG finds secondary vertices on every event but never stores them.**
+  - `AABTGS → AASIGN → AAFSEC` searches per jet: pair seeds with χ² < 4,
+    grown with Δχ² < 5, L/σ > 4, L < 2.5 cm, V0 daughters removed
+    (`AAK0LS`). The result lives only in the `AASCND` common; `AASIGN` uses
+    it to re-sign impact parameters.
+  - The combined tag (DELPHI 97-094: `AACMBT` per jet, `AACMZ0` per event) is
+    a separate entry that `PSFBTG` never calls. `BtagWriter` calls both after
+    `PSFBTG`, in BSAURUS's `PXBTAG('RUN')` order. Output layouts:
+    `delphi_edm4hep/README.md` §2.5.
+- **`AACMBT` consumes random numbers on simulation.** `AALINT` drops leptons
+  at random to emulate ID inefficiency (`nrun < 0`), from the same CERNLIB
+  stream as AABTAG's MC IP smearing (`AAPS9x`); unguarded, the next event's
+  lifetime tag would change. `BtagWriter` saves and restores the stream with
+  `RDMOUT`/`RDMIN`, so the combined tag leaves all other output unchanged.
+- **Some AABTAG words are not what their headers suggest:**
+
+  | Word | Header / expectation | Contents | Converter |
+  |---|---|---|---|
+  | `PHIV` | "sign of impact parameter" | signed distance along the jet axis from the PV to the track's closest approach, cm (`AASGNT → AADCAJ → AADIST → POINTF`) | sign and distance (mm) in separate slots |
+  | `IST` | `AAK0LS` V0 flags (99, 200/300/400) | when read, `AASTRK`/`AASLCT`/`AAIMPC` quality code: -99 initial, -98 no VD hits, -90 VD quality class, 10 inside IP cut; the V0 codes remain possible | as is |
+  | `DISTJ`, `ERRTJ` | track–jet distance and error | placeholder `0, 100 cm` (no VD z-hits or bad PV z-covariance, `AASGNT`) or `0, √200 cm` (null jet momentum, `AADCAJ`) | NaN on placeholders |
+  | `CHI2SV` | a vertex χ² | significance of the SV displacement from the PV; the fit χ² is dropped (`chi2sv(nhypo) = chi2vs` commented out) | as is; vertex `chi2` = NaN |
+  | `CSEC` | — | never filled | NaN |
 
 ### Known divergences from the reference sequence
 
