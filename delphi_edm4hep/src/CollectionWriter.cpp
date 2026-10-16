@@ -12,6 +12,7 @@
 #include <iostream>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace delphi_edm4hep {
 
@@ -20,6 +21,9 @@ namespace {
 // Collection name -> provenance, first writer wins. Collections are emitted
 // once per event, so this deduplicates across the job.
 std::map<std::string, Provenance, std::less<>> g_seen;
+
+// Metadata name -> string list, first writer wins (see noteMetadata).
+std::map<std::string, std::vector<std::string>, std::less<>> g_metadata;
 
 // PA extra-module (blocklet) names accepted by PHDST's LPHPA, plus the
 // event-level bank mnemonics used in collection names. A name built from one
@@ -109,6 +113,21 @@ ProvenanceRecord provenanceRecord() {
   for (const auto& [name, prov] : g_seen) {
     record.collections.push_back(name);
     record.sources.emplace_back(label(prov));
+  }
+  return record;
+}
+
+void noteMetadata(std::string_view name, std::vector<std::string> values) {
+  g_metadata.emplace(std::string(name), std::move(values));
+}
+
+MetadataRecord metadataRecord() {
+  MetadataRecord record;
+  record.names.reserve(g_metadata.size());
+  record.values.reserve(g_metadata.size());
+  for (const auto& [name, values] : g_metadata) {
+    record.names.push_back(name);
+    record.values.push_back(values);
   }
   return record;
 }

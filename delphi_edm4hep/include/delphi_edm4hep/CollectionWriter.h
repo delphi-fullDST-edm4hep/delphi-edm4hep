@@ -113,6 +113,18 @@ struct ProvenanceRecord {
 };
 ProvenanceRecord provenanceRecord();
 
+// Job-level metadata: a named list of strings describing the layout of a
+// collection (for example the slot names of a `parameters` vector), written
+// once into the metadata frame rather than repeated per event. First
+// registration wins, so a writer may register it on every event.
+void noteMetadata(std::string_view name, std::vector<std::string> values);
+
+struct MetadataRecord {
+  std::vector<std::string>              names;
+  std::vector<std::vector<std::string>> values;
+};
+MetadataRecord metadataRecord();
+
 class CollectionWriter {
 public:
   CollectionWriter(podio::Frame& frame,
@@ -193,6 +205,13 @@ protected:
     frame_.putParameter(std::move(name), std::forward<T>(value));
   }
 
+
+  // Register a job-level string list under "<source>_<bank>_<key>"; see
+  // noteMetadata. Nothing is written to the event frame.
+  void putMetadata(std::string_view bank, std::string_view key,
+                   std::vector<std::string> values) {
+    noteMetadata(makeName(bank, key), std::move(values));
+  }
 
   // A run of parameters sharing one bank tag and one provenance, so the
   // provenance is stated once for the group rather than at every parameter:

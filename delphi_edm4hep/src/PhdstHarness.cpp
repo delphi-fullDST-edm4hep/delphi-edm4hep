@@ -334,6 +334,13 @@ void on_user99() noexcept {
     meta.putParameter("provenance_collection", record.collections);
     meta.putParameter("provenance_source",     record.sources);
 
+    // Layout descriptions the writers registered (noteMetadata), such as the
+    // slot names of a `parameters` vector. Once per job, like the provenance.
+    const auto layout = metadataRecord();
+    for (std::size_t i = 0; i < layout.names.size(); ++i) {
+      meta.putParameter(layout.names[i], layout.values[i]);
+    }
+
     // What the input file actually carried, so an empty collection can be
     // told apart from a module the file never had. Covers the events
     // converted, not the whole file.
