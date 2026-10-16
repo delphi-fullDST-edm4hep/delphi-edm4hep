@@ -85,6 +85,7 @@ add_library(delphi_edm4hep
   src/Event/Event.cpp
   src/Vertex/Vertex.cpp
   src/Btag/Btag.cpp
+  src/Btag/Bsaurus.cpp
   src/Tracking/TrackElements.cpp
   src/Tracking/Tracking.cpp
   src/Calorimeter/Calorimeter.cpp

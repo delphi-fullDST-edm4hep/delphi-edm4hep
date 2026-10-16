@@ -9,6 +9,7 @@
 
 #include "delphi_edm4hep/internal/BeamSpotStatus.h"
 #include "delphi_edm4hep/CollectionWriter.h"   // EventContext
+#include "delphi_edm4hep/Btag/Bsaurus.h"
 #include "delphi_edm4hep/Btag/Btag.h"
 #include "delphi_edm4hep/PhdstHarness.h"
 #include "delphi_edm4hep/Calorimeter/Calorimeter.h"
@@ -170,6 +171,12 @@ int main(int argc, char** argv) {
     // B-tagging. After Tracking (needs ctx.tracking to resolve AABTAG's
     // PA addresses onto emitted Particles).
     dom::btag::BtagWriter(frame, ctx, dom::bank::Pass::Sdst).emit();
+    // BSAURUS inclusive B reconstruction. Last on purpose: it re-runs AABTAG
+    // (the writer restores the steering common and the RNDM state afterwards,
+    // but the AABTAG commons then hold its re-run), and its lepton ID rewrites
+    // mass codes in this event's PA banks, which every writer above has
+    // already read.
+    dom::bsaurus::BsaurusWriter(frame, ctx, dom::bank::Pass::Sdst).emit();
   };
 
   return harness::run(cfg);
