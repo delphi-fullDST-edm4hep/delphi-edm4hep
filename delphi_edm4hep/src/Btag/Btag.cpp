@@ -11,7 +11,6 @@
 
 #include "delphi_edm4hep/internal/AabtagCommons.h"
 #include "delphi_edm4hep/internal/AabtagStatus.h"
-#include "delphi_edm4hep/internal/AabtagSvFit.h"
 #include "delphi_edm4hep/internal/PaWalk.h"
 
 #include "skelana/functions.hpp"
@@ -304,11 +303,9 @@ void BtagWriter::emit()
 //   SecondaryVertices  one Vertex per AAFSEC hypothesis, accepted or not
 //                      (parameters[0] = ITSEC says which); position mm,
 //                      covariance mm^2, particles = the fitted tracks. chi2
-//                      and ndf are those of AAFSEC's own vertex fit, which
-//                      AABTAG does not keep and AabtagSvFit.h recovers from
-//                      the fit call; NaN and 0 if no fit matches. CHI2SV, the
-//                      vertex's displacement significance, is in the
-//                      parameters.
+//                      is NaN and ndf 0: AABTAG does not keep the fit chi2
+//                      (see the AASCND comment). CHI2SV, the vertex's
+//                      displacement significance, is in the parameters.
 //   CombinedTagRow     one ParticleID per AABTAG jet, in jet order: type =
 //                      category JTAG, likelihood = X_jet, parameters as
 //                      documented below. AABTAG's own jets are deliberately
@@ -383,10 +380,8 @@ void BtagWriter::emitCombinedTag(bool valid,
     sv.setCovMatrix({aa::SSEC(1, h) * kCm2Mm2_f, aa::SSEC(2, h) * kCm2Mm2_f,
                      aa::SSEC(3, h) * kCm2Mm2_f, aa::SSEC(4, h) * kCm2Mm2_f,
                      aa::SSEC(5, h) * kCm2Mm2_f, aa::SSEC(6, h) * kCm2Mm2_f});
-    const float vsec[3] = {aa::VSEC(1, h), aa::VSEC(2, h), aa::VSEC(3, h)};
-    const auto fit = aa::svFitAt(vsec);
-    sv.setChi2(fit ? fit->chi2 : kNaN);
-    sv.setNdf(fit ? fit->ndf : 0);
+    sv.setChi2(kNaN);   // AABTAG keeps no fit chi2; CHI2SV is parameters[7]
+    sv.setNdf(0);
     const int itsec = aa::ITSEC(h);
     if (itsec >= 0) ++nAccepted;
     const int nsec = std::clamp(aa::NSEC(h), 0, aa::kMaxSvTracks);
