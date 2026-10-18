@@ -705,6 +705,10 @@ quantities and AABTAG's primary vertex exist only for `AABTAG_*`; the stored
 bank has no per-track content. AABTAG's vertex is a separate collection and
 does not replace `sDST_PV_PrimaryVertex`.
 
+`AABTAG_*` also carries DELPHI's combined b-tag (DELPHI 97-094) and AABTAG's
+secondary vertices, which DELPHI computed but never stored. "Primary vertex"
+below always means `AABTAG_PrimaryVertex`, not `sDST_PV_PrimaryVertex`.
+
 > On simulation, AABTAG draws from the same random sequence as detector
 > smearing, so per-event values differ from a conversion made without it.
 > Distributions are unchanged; real data is unaffected.
@@ -758,6 +762,23 @@ on output.
   VD hits Rφ and z, `[7]`/`[8]` VD layers Rφ and z, `[9]` used for the tag,
   `[10]` attached to the vertex. The hit and layer counts are signed: a
   negative value marks a rejected track, `abs()` is the count.
+  Slots `[11..21]` serve the combined tag:
+
+  | Slot | Content |
+  |---|---|
+  | 11 | jet: 1-based row of `AABTAG_CombinedTagRow`, 0 if none |
+  | 12 | thrust hemisphere (1, 2) |
+  | 13 | sign of the impact parameter (±1, always set) |
+  | 14 | distance along the jet axis to the track's closest approach (mm) |
+  | 15 | rapidity w.r.t. the jet |
+  | 16, 17 | track–jet distance and its error (mm) |
+  | 18 | secondary vertex using the track: `±row`, `+100` if in the fit, 0 if none |
+  | 19 | track quality: -98 no VD hits, -90 VD class, 10 in IP cut, -99 unset |
+  | 20 | jet after the secondary-vertex redefinition (as 11) |
+  | 21 | ≠ 0 if used for thrust and oblateness |
+
+  14, 16 and 17 are NaN together where AABTAG did not compute them; 13 is
+  still valid there.
 
   Impact parameters are on the track: each track AABTAG used carries a
   `TrackState` at `AtVertex`, with `referencePoint` at AABTAG's vertex, `D0`
@@ -783,6 +804,43 @@ on output.
   `Truncated = 1`
   therefore means the capacity was reached and additional eligible tracks may
   have been clipped, not that clipping can be proved from the common alone.
+- `<source>_AABTAG_SecondaryVertices` (Vertex, `algorithmType = 5`) — every
+  secondary-vertex hypothesis; `particles` are its tracks. `chi2` is NaN and
+  `ndf` 0: DELPHI did not keep the fit χ².
+
+  | `parameters` | Content |
+  |---|---|
+  | 0 | ≥ 0 if accepted |
+  | 1, 2, 3 | tracks; tracks in the fit; rapidity tracks |
+  | 4 | jet: 1-based row of `AABTAG_CombinedTagRow` |
+  | 5 | 1 for a 3-D fit, 0 for Rφ only |
+  | 6 | combined track probability |
+  | 7 | displacement significance from the primary vertex (not a fit χ²) |
+  | 8 | NaN (never filled by DELPHI) |
+  | 9–12, 13–16 | momentum (px, py, pz, E; GeV), without and with rapidity tracks |
+  | 17, 18; 19–21 | θ, φ of the flight direction (rad); their covariance |
+  | 22, 23; 24–26 | D0, Z0 w.r.t. the primary vertex (mm, EDM4hep sign); covariance |
+  | 27… | track indices, then rapidity-track indices |
+
+- `<source>_AABTAG_CombinedTagRow` (ParticleID, `algorithmType = 6`) — one row
+  per AABTAG jet, in jet order; the jets themselves are not emitted. `type` is
+  the category (1 secondary vertex, 2 ≥ 2 significant tracks, 3 impact
+  parameters only, 4 as 3 without rapidity tracks, 0 untagged), `likelihood`
+  the jet tag X_jet.
+
+  | `parameters` | Content |
+  |---|---|
+  | 0–3 | jet axis (px, py, pz, E) |
+  | 4, 5, 6 | category, X_jet, thrust hemisphere |
+  | 7–12 | discriminating variables |
+  | 13–18, 19–24 | their uds/b and c/b likelihood ratios |
+  | 25–29 | combined ratios and the rapidity-track count |
+  | 30–33 | jet axis after the secondary-vertex redefinition |
+  | 34… | per rapidity track: index, rapidity, two ratios |
+
+- Frame parameters `CombinedTagEvent` (X_ev), `CombinedTagHemisphere` (largest
+  X_jet per hemisphere, NaN if none), `Oblateness`, and the counts
+  `NCombinedTagRows`, `NSecondaryVertexHypotheses`, `NSecondaryVertices`.
 
 `ImpactParRPhi` uses AABTAG's **own sign convention**, not the LCIO `D0` sign
 of the Track collections — the sign is the physics (the negative-IP side is

@@ -175,6 +175,29 @@ stored bank is read back beside it, so both tags are always emitted (see
   functions.
 - `PSFBTG` pre-fills the PSCBTG probabilities with `2.0`, so **2.0 means "not
   computed"**, not a probability.
+- **AABTAG finds secondary vertices on every event but never stores them.**
+  - `AABTGS → AASIGN → AAFSEC` searches per jet: pair seeds with χ² < 4,
+    grown with Δχ² < 5, L/σ > 4, L < 2.5 cm, V0 daughters removed
+    (`AAK0LS`). The result lives only in the `AASCND` common; `AASIGN` uses
+    it to re-sign impact parameters.
+  - The combined tag (DELPHI 97-094: `AACMBT` per jet, `AACMZ0` per event) is
+    a separate entry that `PSFBTG` never calls. `BtagWriter` calls both after
+    `PSFBTG`, in BSAURUS's `PXBTAG('RUN')` order. Output layouts:
+    `delphi_edm4hep/README.md` §2.5.
+- **`AACMBT` consumes random numbers on simulation.** `AALINT` drops leptons
+  at random to emulate ID inefficiency (`nrun < 0`), from the same CERNLIB
+  stream as AABTAG's MC IP smearing (`AAPS9x`); unguarded, the next event's
+  lifetime tag would change. `BtagWriter` saves and restores the stream with
+  `RDMOUT`/`RDMIN`, so the combined tag leaves all other output unchanged.
+- **Some AABTAG words are not what their headers suggest:**
+
+  | Word | Header / expectation | Contents | Converter |
+  |---|---|---|---|
+  | `PHIV` | "sign of impact parameter" | signed distance along the jet axis from the PV to the track's closest approach, cm (`AASGNT → AADCAJ → AADIST → POINTF`) | sign and distance (mm) in separate slots |
+  | `IST` | `AAK0LS` V0 flags (99, 200/300/400) | when read, `AASTRK`/`AASLCT`/`AAIMPC` quality code: -99 initial, -98 no VD hits, -90 VD quality class, 10 inside IP cut; the V0 codes remain possible | as is |
+  | `DISTJ`, `ERRTJ` | track–jet distance and error | placeholder `0, 100 cm` (no VD z-hits or bad PV z-covariance, `AASGNT`) or `0, √200 cm` (null jet momentum, `AADCAJ`) | NaN on placeholders |
+  | `CHI2SV` | a vertex χ² | significance of the SV displacement from the PV; the fit χ² is dropped (`chi2sv(nhypo) = chi2vs` commented out) | as is; vertex `chi2` = NaN |
+  | `CSEC` | — | never filled | NaN |
 
 ### Known divergences from the reference sequence
 

@@ -37,10 +37,6 @@ namespace domain = delphi_edm4hep::btag::check;
 
 namespace {
 
-// Number of params on an AABTAG_TrackTag row; see Btag.cpp for the meaning of
-// each index.
-constexpr std::size_t kTagParams = 11;
-
 // CHI2TR is a truncated quadratic form, so it rounds slightly below zero for a
 // track sitting on the vertex. Observed floor over 3459 attached tracks is
 // -0.03, against a median of 1.4.
@@ -58,6 +54,9 @@ struct Stats {
   std::uint64_t probabilityFailures = 0;
   std::uint64_t tagRowCountFailures = 0;
   std::uint64_t tagParamCountFailures = 0;
+  // Rows the layout check rejected, and whose domain checks therefore never
+  // ran. Reported separately so a skipped row cannot be read as a passed one.
+  std::uint64_t tagRowsUnchecked = 0;
   std::uint64_t tagDomainFailures = 0;
   std::uint64_t unresolvedParticles = 0;
   std::uint64_t impactStateCountFailures = 0;
@@ -197,26 +196,59 @@ int main(int argc, char** argv) {
       std::uint64_t attachedRows = 0;
       for (const auto& tag : tags) {
         const auto params = tag.getParameters();
-        if (params.size() != kTagParams) { ++stats.tagParamCountFailures; continue; }
-        if (!okProbability(params[0]) || !okProbability(params[1])) ++stats.tagDomainFailures;
-        if (!domain::isNonnegativeFinite(params[2])) ++stats.tagDomainFailures;
+        if (params.size() != domain::kTrCount) {
+          ++stats.tagParamCountFailures;
+          ++stats.tagRowsUnchecked;
+          continue;
+        }
+        if (!okProbability(params[domain::kTrProb]) ||
+            !okProbability(params[domain::kTrProbZ])) ++stats.tagDomainFailures;
+        if (!domain::isNonnegativeFinite(params[domain::kTrChi2Vd])) ++stats.tagDomainFailures;
         // CHI2TR is defined only where AABTAG attached the track; the
         // converter emits NaN elsewhere, and the checker holds it to that.
-        if (static_cast<std::int32_t>(params[10]) == 1) {
-          if (!domain::isFinite(params[3]) || params[3] < -kChi2RoundGuard)
+        const bool attached =
+            static_cast<std::int32_t>(params[domain::kTrAttached]) == 1;
+        if (attached) {
+          if (!domain::isFinite(params[domain::kTrChi2Tr]) ||
+              params[domain::kTrChi2Tr] < -kChi2RoundGuard)
             ++stats.tagDomainFailures;
-        } else if (!std::isnan(params[3])) {
+        } else if (!std::isnan(params[domain::kTrChi2Tr])) {
           ++stats.tagDomainFailures;
         }
-        if (!domain::isPositiveFinite(params[4])) ++stats.tagDomainFailures;
-        if (!domain::isValidSignedCount(static_cast<std::int32_t>(params[5]), domain::kMaxVdHits) ||
-            !domain::isValidSignedCount(static_cast<std::int32_t>(params[6]), domain::kMaxVdHits) ||
-            !domain::isValidSignedCount(static_cast<std::int32_t>(params[7]), domain::kMaxVdLayers) ||
-            !domain::isValidSignedCount(static_cast<std::int32_t>(params[8]), domain::kMaxVdLayers))
+        if (!domain::isPositiveFinite(params[domain::kTrMomentum])) ++stats.tagDomainFailures;
+        if (!domain::isValidSignedCount(static_cast<std::int32_t>(params[domain::kTrNVdp]), domain::kMaxVdHits) ||
+            !domain::isValidSignedCount(static_cast<std::int32_t>(params[domain::kTrNVdpz]), domain::kMaxVdHits) ||
+            !domain::isValidSignedCount(static_cast<std::int32_t>(params[domain::kTrNLay]), domain::kMaxVdLayers) ||
+            !domain::isValidSignedCount(static_cast<std::int32_t>(params[domain::kTrNLayz]), domain::kMaxVdLayers))
           ++stats.tagDomainFailures;
-        if (!domain::isValidUsedForTag(static_cast<std::int32_t>(params[9]))) ++stats.tagDomainFailures;
-        if (!domain::isValidAttachedFlag(static_cast<std::int32_t>(params[10]))) ++stats.tagDomainFailures;
-        if (static_cast<std::int32_t>(params[10]) == 1) ++attachedRows;
+        if (!domain::isValidUsedForTag(static_cast<std::int32_t>(params[domain::kTrIsrt]))) ++stats.tagDomainFailures;
+        if (!domain::isValidAttachedFlag(static_cast<std::int32_t>(params[domain::kTrAttached]))) ++stats.tagDomainFailures;
+        // The AAJETS / AASCND / AAJESV words. Each bound below comes from the
+        // algorithm -- an array cap or the list of codes a variable is
+        // assigned in aabtagxx.car -- rather than from the range a sample
+        // happens to show, so a failure here is corruption and not a tail.
+        if (!domain::isValidJetIndex(static_cast<std::int32_t>(params[domain::kTrIjet])) ||
+            !domain::isValidJetIndex(static_cast<std::int32_t>(params[domain::kTrIjsv])))
+          ++stats.tagDomainFailures;
+        if (!domain::isValidHemisphere(static_cast<std::int32_t>(params[domain::kTrIthr]))) ++stats.tagDomainFailures;
+        if (!domain::isUnitSign(params[domain::kTrPhivSign])) ++stats.tagDomainFailures;
+        if (!domain::isValidInsv(static_cast<std::int32_t>(params[domain::kTrInsv]))) ++stats.tagDomainFailures;
+        if (!domain::isValidTrackStatus(static_cast<std::int32_t>(params[domain::kTrIst]))) ++stats.tagDomainFailures;
+        if (!domain::isFinite(params[domain::kTrRpdt])) ++stats.tagDomainFailures;
+        // DISTJ / ERRTJ / the PHIV length are a measurement or a placeholder
+        // together, so NaN is expected and only the pairing is enforced: a
+        // finite distance must be non-negative and carry a positive error.
+        if (!domain::isConsistentPlaceholder(params[domain::kTrPhivDist], params[domain::kTrDistj]) ||
+            !domain::isConsistentPlaceholder(params[domain::kTrErrtj], params[domain::kTrDistj]))
+          ++stats.tagDomainFailures;
+        if (!std::isnan(params[domain::kTrDistj]) &&
+            (!domain::isNonnegativeFinite(params[domain::kTrDistj]) ||
+             !domain::isPositiveFinite(params[domain::kTrErrtj]) ||
+             !domain::isFinite(params[domain::kTrPhivDist])))
+          ++stats.tagDomainFailures;
+        // ILUND is deliberately unchecked: the value indexes a JETSET record
+        // this converter does not ship, so any bound would be a guess.
+        if (attached) ++attachedRows;
         if (!tag.getParticle().isAvailable()) ++stats.unresolvedParticles;
       }
 
@@ -288,6 +320,7 @@ int main(int argc, char** argv) {
             << " probability_failures=" << stats.probabilityFailures
             << " tag_row_count_failures=" << stats.tagRowCountFailures
             << " tag_param_count_failures=" << stats.tagParamCountFailures
+            << " tag_rows_unchecked=" << stats.tagRowsUnchecked
             << " tag_domain_failures=" << stats.tagDomainFailures
             << " impact_state_count_failures=" << stats.impactStateCountFailures
             << " impact_domain_failures=" << stats.impactDomainFailures
