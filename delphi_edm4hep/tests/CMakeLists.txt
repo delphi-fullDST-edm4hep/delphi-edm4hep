@@ -30,6 +30,12 @@ target_include_directories(btag_check_domains_test
   PRIVATE ${PROJECT_SOURCE_DIR}/include)
 add_test(NAME btag_check_domain_contract COMMAND btag_check_domains_test)
 
+# The BSAURUS word tables must name every slot of the three Fortran arrays
+# exactly once; a gap or an overlap would silently mislabel the file.
+add_executable(bsaurus_words_test bsaurus_words_test.cpp)
+target_include_directories(bsaurus_words_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME bsaurus_words_contract COMMAND bsaurus_words_test)
+
 # PHDST-sample-backed fault injection for the C++/Fortran callback boundary.
 # The runner skips when DELPHI_PHDST_SAMPLE is not set, like alignment_audit.
 add_executable(harness_exception_probe harness_exception_probe.cpp)

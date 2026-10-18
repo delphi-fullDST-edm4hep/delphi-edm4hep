@@ -199,6 +199,114 @@ stored bank is read back beside it, so both tags are always emitted (see
   | `CHI2SV` | a vertex χ² | significance of the SV displacement from the PV; the fit χ² is dropped (`chi2sv(nhypo) = chi2vs` commented out) | as is; vertex `chi2` = NaN |
   | `CSEC` | — | never filled | NaN |
 
+### BSAURUS
+
+`BsaurusWriter` (`src/Btag/Bsaurus.cpp`) calls DELPHI's inclusive
+B-reconstruction package once per event in pass 1 and copies its commons out
+(`internal/BsaurusCommons.h`, sizes pinned to `nm -S libbsaurusxx.a`; the slot
+names in `internal/BsaurusWords.h`, checked for gaps and overlaps by
+`bsaurus_words_test`). Facts worth not rediscovering, all from `bsaurus.car`,
+`elepha32.car`, `vdbeam.car`, `jetset74.car` and `dstfix40.car`:
+
+- **BSAURUS is self-driving.** `FORRUN` runs ELEPHANT, its own AABTAG pass
+  (`PXBTAG('RUN')`: BTAGAA with `IFBFLA = 3`, AAHEMI, the B-confidence pass
+  with `IFBCON = .TRUE.`, AACMBT, AACMZ0), MAMMOTH, the RICH decoding and
+  PXLEID. Its clusters are its own LUCLUS (`PARU(44) = 5`, `MSTU(46) = 1`), its
+  thrust its own LUTHRU; from AABTAG it takes the track-to-primary-vertex
+  probabilities, the tags and the vertex. `AADATA`'s second-call guard makes
+  its initialisation call a no-op.
+- **The writer must run last.** PXLEID resets identified leptons to pions and
+  re-tags electrons and muons by rewriting the mass code, mass and energy in
+  the PA `MAIN` block; FIXLAMB rewrites the anti-Λ code; ELEPHANT corrects
+  photon energies. All in the ZEBRA banks of the current event, which every
+  other writer reads. PHDST reads the next event afresh, so the damage is
+  confined to the event. The AABTAG commons also hold BSAURUS's re-run
+  afterwards, so `BtagWriter` has to have read them first.
+- **Shared Fortran state leaks into the next event unless isolated.** Found by
+  converting 400 Z→bb̄ MC and 3000 94c data events with and without the writer
+  and comparing every branch; each channel below produced differences from the
+  second event on. The writer (`FortranStateGuard` in `Bsaurus.cpp`) snapshots
+  the job's copy of each block before `CALL BSAURUS` and puts it back after.
+  Blocks BSAURUS configures once (FORINI, YBINIT, PXBTAG's first call) and the
+  two random streams are *context-switched* instead: BSAURUS keeps its own copy
+  between events, swapped in before the call. Sizes are `nm -S` on the pinned
+  release.
+  - `AAFLAG` (restored) — `PXBTAG('RUN')` leaves `IFBFLA = 3` and
+    `IFK0ST = LSHORT`; BTAGAA substitutes 0.6 for the negative-side
+    probability when `IFBFLA = 3`, so the next event's AABTAG tag changes.
+  - `LUDATR` (switched) — LUTHRU picks the sign of its thrust axis at random
+    (`SGN = (-1.)**INT(RLU(0)+0.5)`). BSAURUS's own LUTHRU advances the RLU
+    stream, AABTAG's next thrust axis comes out mirrored, and its hemisphere
+    labels swap in about half of the events (the sign of `AABTAG_ThrustAxis`,
+    the hemisphere order of the `ProbNegIP`/`ProbPosIP`/`ProbAllIP` triplets).
+  - `LUDAT1` (switched) — JETSET steering: BSAURUS sets `MSTU(12) = 0` and
+    `MSTU(22) = 10000` once and the LUCLUS parameters per event. The raised
+    error limit must stay in BSAURUS's view, or JETSET stops the job after ten
+    LUERRM errors. `LUDAT2` and `LUJETS` are restored.
+  - `PXCONS` (restored) — ELEPHANT sets `AMPI = 0.1395679`,
+    `PI = 3.14159265359`, `BMAG` and `EBEAM`; MAMMOTH sets `BMAG = 1.231`.
+    SKELANA set `AMPI = 0.139570` and `PI = ACOS(-1.)` in PSINI and computes
+    VECP energies and STIC angles with them: left changed,
+    `sDST_MAIN_Particles.energy` and `sDST_SSTC_Showers.iPhi` move by one float
+    ulp in a few percent of the rows. Restored rather than switched because
+    BSAURUS reads SKELANA's per-event `EBEAM` from it (`SHEM`, `EHEM_REF`).
+  - `SXCRNU` (switched) — the state of DELPHI's `RNDM` (dstana's `RNDM` is
+    `SXRNU`, `RANNOR` is `SXRVG`). ELEPHANT (MC vertex smearing, conversions),
+    MUFLAG, AABEAM and AABTAG's MC impact-parameter smearing draw from it.
+    CERNLIB's `RDMOUT`/`RDMIN` would not do here: dstana's version has one save
+    slot (`SXROUT(3)`/`SXRIN(3)`) and would reset BSAURUS's stream to the same
+    point on every event.
+  - `VDBMSP`, `VDDSKF` (restored) — ELEPHANT's initialisation calls `VDIDST`
+    and `SETBS(1,1,SIGMAB)` with its own smearing widths. On simulation
+    SKELANA's beam spot is `VDMCBS`: the generated vertex smeared with `SXRNG`
+    by those widths, so `sDST_BSP_BeamSpot`, AABTAG's vertex and everything
+    downstream of it (`AtVertex` track states, `d0BS`, the secondary vertices)
+    moved on MC. `VDMCBS` caches its result per (run, event), so BSAURUS's own
+    calls within the event are free.
+  - `MAMCOM` (switched) — SKELANA's V0 reconstruction (`MAMDATA`, `L_RECV0`)
+    and BSAURUS's `FORINI` (`L_OWNPV`, `L_IDVD`, ...) each configure MAMMOTH
+    once and never again. A plain restore made MAMMOTH print its V0 switch-on
+    message on every event.
+  - `PXPCON`, `ELOUTP`, `AACBSD`, `AARND` (restored) — ELEPHANT's state and
+    per-event output, AABTAG's beam-spot constants and random-init flag.
+  With all of these, every pre-existing branch and frame parameter of both
+  samples is bit-identical to the converter without BSAURUS.
+- **Two AABTAG passes disagree on simulation.** BSAURUS's `BTAG`/`BCOMB` words
+  come from its own `PXBTAG('RUN')`, whose B-confidence pass also changes the
+  per-track probabilities; on MC the impact-parameter smearing is drawn afresh
+  in that second pass, so the two disagree event by event. This is BSAURUS
+  behaving as it always did, not a converter effect.
+- **The flavour nets are high on the b-quark side.** On the official kk2f4146 MC, with BSAURUS's own truth
+  (`MC_QTYP` = +12 is the b-quark side, 98.8% consistent with the sign of the primary B's code), `FLAV`,
+  `FLAV45` and `FLBOTH` are above 0.5 on the b-quark side and the hemisphere charge `QHEM` and `QVER` are negative there. The
+  BSAURUS header comment ("< 0.5 -> b, > 0.5 -> bbar") says the opposite; the measured sign is the one to
+  use. `FLBOTH` is −2 for about 11% of hemispheres with a vertex fit.
+- **`VCHI2`/`NDOF` in `CYBFIT` are declared but never filled**; the vertex
+  collection carries the fit probability instead. `FLAV45`, `FLBOTH`,
+  `DFLAV45` and the MACRIB nets use −2, not −999, for "no result".
+- **Generator truth needs JETSET strings.** `BMCINFO` looks for SH entries
+  with DELPHI code 2092 (JETSET KF 92, the string) and 2094, and derives the
+  primary B hadrons, their decay chain and the generated vertices from the
+  string's daughters. Pythia 8 writes no string entries and `hepmc2fadgen`
+  would drop codes 91-94 anyway, so on the Pythia 8 → DELSIM samples it prints
+  `NO STRING FOUND -> SKIP` on every event and the `MC_*` hemisphere words and
+  the per-track `MC_KFP`/`MC_TYP`/`MC_KST` stay at 0 (VZERO, not the −999
+  sentinel); `MC_KF` comes from the track's own SH entry and is filled.
+  Checked on 300 events of official kk2f4146 94c MC
+  (`simulated-data/lyon/kk2f4146/v94c/91.25/kk2f4146_qqpy_91.25_40001.sdst`):
+  354 KF = 92 and 297 KF = 94 entries, no `NO STRING FOUND`, `MC_BKF`
+  non-zero in 20.3% of hemispheres, `MC_QTYP` = ±12 there. Synthesising
+  KF = 92 entries per hadronisation vertex in `hepmc2fadgen` would give the
+  Pythia 8 samples the same words; nothing in the converter needs it.
+- **No emitted name contains "jet".** Five words are renamed from their Fortran
+  PARAMETERs (`IBE_NJET`/`IBH_NJET` → `NCLUS`, `IBH_BJET` → `BCLUS`, `IBH_QJET`/`QJET2`/`QJET3`
+  → `QHEM`/`QHEM2`/`QLEAD`) and the frame parameter is `HemisphereClusterIndex`, so nothing
+  suggests an EDM4hep jet. Only the DELPHI library names (JETSET, `/LUJETS/`, `/HEMJETS/`)
+  keep theirs, since the symbols must link.
+- **Not in pass 2.** `PXBTAG('RUN')` sets `IFK0ST = LSHORT`, FORINI has a
+  separate full-DST branch, and none of it has been exercised on a fullDST.
+- Cost: 6–8 ms per event; about one line of Fortran diagnostics per event.
+
 ### Known divergences from the reference sequence
 
 These are real behaviour differences from `skelana::Analysis`, not stylistic

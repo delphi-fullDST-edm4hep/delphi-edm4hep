@@ -847,6 +847,102 @@ of the Track collections — the sign is the physics (the negative-IP side is
 the mistag control sample). Do not mix it with `sDST_QTRAC_Tracks_d0PV` or
 `sDST_PV_Tracks_d0PV`; see §2.2.
 
+### 2.6 BSAURUS inclusive B reconstruction (`sDST_BSAURUS_*`)
+
+Pass 1 runs DELPHI's inclusive B-reconstruction package BSAURUS (DELPHI
+2000-069 PHYS 868; `bsaurus.car` of the dstana release, the November-2000
+version with the B-species and flavour networks) on every event. BSAURUS splits
+the event into two hemispheres by its own thrust axis, clusters with LUCLUS
+(d_join = 5 GeV), takes one cluster per hemisphere as the B candidate (the most
+b-like by AABTAG's track-probability tag when there are several, else the most
+energetic), runs its rapidity algorithm, fits a secondary vertex and evaluates
+its neural networks: the track decay-versus-fragmentation net, the vertex
+charge, the b/b̄ flavour nets, the B-species nets and the MACRIB kaon and
+proton nets. Everything is `Derived`. It is not a tag: both hemispheres are
+always filled, and whether a side counts as a B is the reader's cut.
+
+- `sDST_BSAURUS_Hemispheres` (ReconstructedParticle, always 2 entries;
+  hemisphere number = index + 1) — `momentum`/`energy` are BSAURUS's "optimal"
+  B 4-vector (the `BTT` words), `mass` follows from them, `charge` is the sum
+  of the charges of the tracks at the secondary vertex (`RAWQ`),
+  `referencePoint` is the secondary vertex (mm) where one was fitted,
+  `decayVertex` points at it, and `particles` are the tracks fitted to it. NaN
+  where the hemisphere was not reconstructed.
+- `sDST_BSAURUS_SecondaryVertices` (Vertex, `algorithmType = 12`, secondary) —
+  the fitted B decay vertex of each hemisphere with `Status >= 4`: position in
+  mm, covariance in mm². BSAURUS keeps no χ²/ndf (`chi2` is NaN, `ndf` 0); the
+  fit probability is `parameters[1]`. `parameters`: `[0]` hemisphere, `[1]` fit
+  probability, `[2]`/`[3]` r-φ decay length and error (mm), `[4]`/`[5]` 3-D
+  decay length and error (mm), `[6]`/`[7]` σ(φ), σ(θ) of the flight direction
+  (rad), `[8]` tracks at the vertex. `particles` are the fitted tracks.
+- `sDST_BSAURUS_HemisphereWords` (ParticleID, `algorithmType = 60`, 2 entries,
+  linked to the hemisphere) — `type` is the hemisphere status, `likelihood`
+  the improved flavour net `FLAV45` (> 0.5 on the b-quark side, < 0.5 on the b̄ side, measured with the
+  official-MC truth; the BSAURUS header comment's "< 0.5 → b" does not hold; −2 when `Status < 4`),
+  `parameters` the 165 `BSHEM` words in Fortran order and in BSAURUS's units
+  (cm, GeV, ps for the lifetime).
+- `sDST_BSAURUS_TrackWords` (ParticleID, `algorithmType = 61`, one row per
+  BSAURUS particle, linked to its particle) — `type` is the hemisphere,
+  `likelihood` the track net (0 fragmentation → 1 B decay), `parameters` the
+  47 `BSPAR` words. Rows are in BSAURUS's own order (charged by descending
+  momentum, then neutrals), so the `BSAU` word is row + 1.
+- Frame parameters: `Status` (2 ints, see below), `EventWords` (the 20 `BSEVT`
+  words), `HemisphereClusterIndex` (2 ints: the B-candidate cluster's index
+  in BSAURUS's LUCLUS list, 1 = most energetic; 0 until `Status >= 2`),
+  `NParticles`, `NCharged`.
+- Metadata frame, once per file: `sDST_BSAURUS_EventWordNames`,
+  `sDST_BSAURUS_HemisphereWordNames`, `sDST_BSAURUS_TrackWordNames` — the slot
+  name of every word, so a reader can look a word up by name rather than by
+  Fortran index. Multi-word entries are expanded as `_px _py _pz _E`,
+  `_x _y _z` and `_xx _xy _yy _xz _yz _zz` (lower triangle, as `covMatrix`).
+
+**Status** (`ISAURUS`, per hemisphere): 0 not processed, 1 event accepted but
+rejected by the rapidity algorithm (too few particles, thrust or clustering
+failure, a hemisphere without a cluster), 2 rapidity algorithm ran, 3 rapidity
+energy > 10 GeV, 4 secondary-vertex fit done, 5 fit converged. BSAURUS
+pre-fills every word with −999 and only writes what it computes; that
+sentinel is mapped to NaN. The flavour nets `FLAV45`, `FLBOTH`, `DFLAV45` and
+the MACRIB nets `MACK`/`MACP` return −2 for "no result", which is kept as is.
+
+**Word slots** (1-based Fortran index; `[n]` marks an n-word entry; `MC_*`
+words are generator truth):
+
+- `BSEVT` (20): 1 BTAG, 2 BCONF, 3 BCTAG, 4 BCOMB, 5 PV[3], 8 PC[6], 14 NCLUS, 15 MC_FLAV, 16 MC_PV[3], 19 COST, 20 RICH.
+- `BSHEM` (165): 1 BTAG, 2 BCONF, 3 BCTAG, 4 BF[4], 8 BT[4], 12 BY[4], 16 SV[3], 19 SC[6], 25 DEC, 26 DECS, 27 PROB, 28 RET, 29 NACC, 30 QHEM, 31 QVER, 32 QVERS, 33 FLAV, 34 MY, 35 SHEM, 36 QUAL, 37 MC_BDEC, 38 MC_DDEC, 39 MC_DPDEC, 40 MC_BV[3], 43 MC_DV[3], 46 MC_DPV[3], 49 MC_DST, 50 MVER, 51 BPLUS, 52 PRPF, 53 PRPB, 54 PRSF, 55 PRSB, 56 DIPOL, 57 HKST, 58 MC_BP[4], 62 MC_BKF, 63 MC_ND, 64 MC_OSCB, 65 NPCUT, 66 NPALL, 67 NPGOOD, 68 DEC3D, 69 DEC3DS, 70 BLIFE, 71 BLIFES, 72 MC_BLIFE, 73 PKAON, 74 PLEP, 75 CHRDIP, 76 MC_QTYP, 77 MC_PBKF, 78 SVVAR1, 79 SVVAR2, 80 BCOMB, 81 DIPPY, 82 RAWQ, 83 QRANK1, 84 DELTA, 85 HNUM, 86 SHEM2, 87 QHEM2, 88 QLEAD, 89 MC_DRSKF, 90 MC_QNDRS, 91 MC_QCDRS, 92 MC_DRSP, 93 MC_BMC, 94 MC_BMTOT, 95 QRANK2, 96 NKDECAY, 97 QKAMAX, 98 QFSUM, 99 NKFRAG, 100 NPDECAY, 101 NPFRAG, 102 SIGPHI, 103 SIGTHET, 104 NKS, 105 NLAM0, 106 NNEUT, 107 MC_SLD, 108 QRANK3, 109 YRANK1, 110 YRANK2, 111 YRANK3, 112 KRANK1, 113 KRANK2, 114 KRANK3, 115 PRANK1, 116 PRANK2, 117 PRANK3, 118 NPION, 119 NWPROTD, 120 NPGC, 121 NWPROTF, 122 NWLAMBD, 123 NWLAMBF, 124 NWKSD, 125 NWKSF, 126 NWKD, 127 NWKF, 128 PICHRG, 129 QKAON, 130 QLEP, 131 BZERO, 132 MC_BDEC2D, 133 DFLBS, 134 DFLB0, 135 DFLBP, 136 DFLLB, 137 FFLBS, 138 FFLB0, 139 FFLBP, 140 FFLLB, 141 PRBBS, 142 PRBB0, 143 PRBBP, 144 PRBLB, 145 FLAV45, 146 PRBAIBS, 147 PRBAIBP, 148 PRBAIB0, 149 PRBAILB, 150 DFLAV45, 151 LIKBS, 152 LIKB0, 153 QUAL2, 154 BTT[4], 158 YBFIT, 159 BCLUS[4], 163 NCLUS, 164 WEIGHT, 165 FLBOTH.
+- `BSPAR` (47): 1 HEM, 2 Y, 3 PRP, 4 PRS, 5 BRP, 6 BZ, 7 B3D, 8 BSRP, 9 BSZ, 10 BS3D, 11 NET, 12 NRP, 13 NZ, 14 KST, 15 MC_KF, 16 MC_KFP, 17 MC_TYP, 18 MC_KST, 19 MC_THETST, 20 THETST, 21 BSAU, 22 SV, 23 TRKE, 24 TRKM, 25 TRKP, 26 TRKQ, 27 TRKL, 28 ERRE, 29 DELPP, 30 MC_TRKP, 31 MC_TRKE, 32 QUAL, 33 DNET, 34 DFLBS, 35 DFLB0, 36 DFLBP, 37 DFLLB, 38 FFLBS, 39 FFLB0, 40 FFLBP, 41 FFLLB, 42 IYB, 43 WFRY, 44 WLFY, 45 WBDY, 46 MACK, 47 MACP.
+
+The slot comments in `internal/BsaurusWords.h` give one-line meanings; the
+DELPHI note is the reference.
+
+> **BSAURUS runs its own AABTAG pass.** The `BTAG`, `BCONF`, `BCTAG` and
+> `BCOMB` words come from `PXBTAG('RUN')` inside BSAURUS (BTAGAA with
+> `IFBFLA = 3`, the B-confidence pass, then the combined tag), not from the
+> pass that fills `sDST_AABTAG_*`. On simulation AABTAG smears the impact
+> parameters with fresh random numbers in each pass, so the two disagree event
+> by event. Use `sDST_AABTAG_*` for the b-tag and BSAURUS for the inclusive B.
+
+> **Hemisphere 1 is not AABTAG's hemisphere 1.** BSAURUS orients its thrust
+> axis so that hemisphere 1 holds the lower-numbered (more energetic) selected
+> cluster; AABTAG's `ITHR` follows the sign of LUTHRU's axis.
+
+> **Generator-truth words need a JETSET string history.** `BMCINFO` walks the
+> simulation history (SH) bank looking for the LUND string entries (DELPHI code
+> 2092, JETSET KF = 92) and identifies the primary B hadrons as their
+> daughters. Pythia 8 has no string pseudo-particles (hadrons point at the
+> partons directly), so on simulation produced through a Pythia 8 → DELSIM
+> chain it prints `BMCINFO: NO STRING FOUND` and the `MC_*` hemisphere words
+> and the per-track `MC_KFP`/`MC_TYP`/`MC_KST` words stay at **0** (not NaN);
+> the per-track `MC_KF` word is filled from the track's own SH entry. Official
+> DELPHI MC (JETSET fragmentation) carries the strings: on 300 events of
+> kk2f4146 94c the generator record holds 354 string entries, BMCINFO finds
+> them, and `MC_BKF` names a B hadron in 20% of the hemispheres.
+
+BSAURUS adds 6–8 ms per event, prints a line or two of diagnostics per event
+(`<VECTOP> rapidity failure`, `EHEM_REF: ERROR-NEGATIVE MASS!!`, `BSAURUS:
+YBREC error - skip event`), and leaves every other collection bit-identical;
+see `docs/README.md` for what the writer restores to make that so. It is not
+run in pass 2.
+
 ---
 
 ## 3. Code structure
@@ -859,7 +955,7 @@ delphi_edm4hep/
 ├── include/delphi_edm4hep/
 │   │   Helix.h  CollectionWriter.h  PhdstHarness.h  BankPrefix.h
 │   │   PerigeeMatch.h  TeBank.h  internal/{PaWalk,HpcPadDecoder}.h
-│   ├── Event/  Truth/  Tracking/  Vertex/  Calorimeter/  Pid/   (writer headers)
+│   ├── Event/  Truth/  Tracking/  Vertex/  Calorimeter/  Pid/  Btag/   (writer headers)
 ├── src/   (mirrors include/; shared .cpp at top level, writers in src/<Domain>/)
 └── bin/   delphi_sdst_pass.cpp  delphi_fdst_pass.cpp  delphi_bs_fit.cpp
 ```
@@ -879,6 +975,7 @@ is threaded through a per-event `EventContext`.
 | **Vertex** | primary-vertex chain, beamspot, official V0s, photon conversions |
 | **Calorimeter** | EM/HCAL/STIC/combined showers (condensed sDST + per-pad/per-tower fullDST), TOF/HOF hits, and the shower hybrid |
 | **Pid** | dE/dx, muon/electron/hadron ID, RICH, π⁰, TOF, and the PID hybrid |
+| **Btag** | the stored and the recalculated AABTAG b-tag (§2.5) and the BSAURUS inclusive B reconstruction (§2.6) |
 
 ### Shared infrastructure
 
