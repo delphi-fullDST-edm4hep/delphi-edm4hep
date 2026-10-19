@@ -72,6 +72,7 @@ find_package(DelphiAL9 REQUIRED)
 # linkage happens via the binaries (which need the full --start-group
 # linker dance because the DELPHI archives have circular symbol deps).
 add_library(delphi_edm4hep
+  src/AabtagSvFit.cpp
   src/AabtagTrackState.cpp
   src/BeamSpotStatus.cpp
   src/BankPrefix.cpp
@@ -152,6 +153,16 @@ add_executable(delphi_fdst_pass bin/delphi_fdst_pass.cpp)
 target_link_libraries(delphi_fdst_pass
   PRIVATE delphi_edm4hep delphi_fortran_link
 )
+
+# Route AAFSEC's secondary-vertex fits through src/AabtagSvFit.cpp, which
+# keeps the chi2 and ndf that AABTAG itself drops. Only the two passes get
+# this: the wrappers come in with the b-tag writer, and another binary that
+# reaches AAFSEC through the Fortran group without that writer would be left
+# with unresolved __wrap_ symbols.
+foreach(_pass delphi_sdst_pass delphi_fdst_pass)
+  target_link_options(${_pass} PRIVATE
+    -Wl,--wrap=ccfvt2_ -Wl,--wrap=ccfvt3_ -Wl,--wrap=ccfv23_)
+endforeach()
 
 # Standalone post-processing tool: per-run beamspot from aggregated PVs.
 # Pure podio/ROOT — no PHDST, no DELPHI Fortran link group.

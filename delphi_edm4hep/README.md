@@ -805,8 +805,10 @@ on output.
   therefore means the capacity was reached and additional eligible tracks may
   have been clipped, not that clipping can be proved from the common alone.
 - `<source>_AABTAG_SecondaryVertices` (Vertex, `algorithmType = 5`) — every
-  secondary-vertex hypothesis; `particles` are its tracks. `chi2` is NaN and
-  `ndf` 0: DELPHI did not keep the fit χ².
+  secondary-vertex hypothesis; `particles` are its tracks. `chi2` and `ndf`
+  are those of AABTAG's own vertex fit, which DELPHI did not keep: the
+  converter records them from the fit calls (`AabtagSvFit.h`). They are NaN
+  and 0 if no fit produced the hypothesis's position.
 
   | `parameters` | Content |
   |---|---|
