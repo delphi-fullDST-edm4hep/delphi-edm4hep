@@ -4,7 +4,8 @@ Header-only C++ wrappers around the DELPHI PHDST and SKELANA Fortran
 common blocks, vendored from the `delphi-analysis` package of
 [`delphi-nanoaod`](https://github.com/DickyChant/delphi-nanoaod).
 
-- **Upstream repo:** https://github.com/DickyChant/delphi-nanoaod
+- **Upstream repo:** https://github.com/DickyChant/delphi-nanoaod, a fork of
+  the official https://gitlab.cern.ch/delphi/delphi-nanoaod
 - **Vendored from commit:** `fde7b95f6ce8533f58825685980add34dd5e0faf`
   (branch `feature/sim-truth-pv`, vendored 2026-08-19)
 - **Upstream path:** `delphi-analysis/include/{phdst,skelana}/`
@@ -31,7 +32,6 @@ includes, e.g. `skelana/mtrack.hpp`) too — the build fails loudly otherwise.
 
 ## License
 
-delphi-nanoaod carries no explicit license (see the top-level README's
-License section); these files are redistributed here with the upstream
-author's knowledge, under the same "all rights reserved until clarified"
-status as the rest of this repository.
+GPL-3.0-or-later, the licence of the official `delphi-nanoaod` and of the
+DELPHI analysis software these headers wrap; see the top-level
+[`LICENSE`](../../../LICENSE).

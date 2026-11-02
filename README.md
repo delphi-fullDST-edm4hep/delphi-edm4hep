@@ -82,10 +82,10 @@ the concrete release it used.
 
 ## License
 
-Not yet chosen. This package vendors the PHDST/SKELANA wrapper headers from
-the [`delphi-nanoaod`](https://github.com/DickyChant/delphi-nanoaod) analysis
-package (see `delphi_edm4hep/extern/delphi-analysis/README.md` for the exact
-provenance), which as far as we know carries no explicit license; until that
-is clarified we have deliberately not attached a license here either. Until
-one is added, the default "all rights reserved" applies — contact the authors
-for use beyond reading.
+`delphi-edm4hep` is free software, distributed under the GNU General Public
+License, version 3 or (at your option) any later version (GPL-3.0-or-later),
+inherited from [`delphi/dstana`](https://gitlab.cern.ch/delphi/dstana) and
+[`delphi/delphi-nanoaod`](https://gitlab.cern.ch/delphi/delphi-nanoaod). The
+PHDST/SKELANA wrapper headers vendored under
+`delphi_edm4hep/extern/delphi-analysis/` come from `delphi-nanoaod` and are
+distributed under the same licence (provenance in that directory's README).
