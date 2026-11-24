@@ -1,0 +1,19 @@
+{
+  "title": "delphi-edm4hep: DELPHI DST to EDM4hep converter",
+  "upload_type": "software",
+  "creators": [
+    {"name": "Ko, Sanghyun", "affiliation": "CERN", "orcid": "0000-0003-4377-9969"},
+    {"name": "Liko, Dietrich", "affiliation": "Marietta Blau Institute for Particle Physics, Austrian Academy of Sciences", "orcid": "0000-0002-3380-473X"},
+    {"name": "Qian, Sitian", "affiliation": "Northwestern University", "orcid": "0000-0001-9053-2809"},
+    {"name": "Schwickerath, Ulrich", "affiliation": "CERN", "orcid": "0000-0001-8320-9835"},
+    {"name": "Zhang, Jingyu", "affiliation": "Vanderbilt University", "orcid": "0009-0004-7050-5677"}
+  ],
+  "license": "GPL-3.0-or-later",
+  "keywords": ["DELPHI", "LEP", "EDM4hep", "Key4hep", "open data", "data preservation"],
+  "related_identifiers": [
+    {"identifier": "https://github.com/delphi-fullDST-edm4hep/delphi-edm4hep", "relation": "isSupplementTo", "resource_type": "software", "scheme": "url"},
+    {"identifier": "https://github.com/delphi-fullDST-edm4hep/delphi-correctionlib", "relation": "isSupplementedBy", "resource_type": "software", "scheme": "url"},
+    {"identifier": "https://github.com/delphi-fullDST-edm4hep/delphi-sim-pipeline", "relation": "isSupplementedBy", "resource_type": "software", "scheme": "url"}
+  ],
+  "access_right": "open"
+}
