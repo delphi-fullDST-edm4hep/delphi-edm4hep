@@ -213,6 +213,7 @@ extern AajetsCommon aajets_;
 //          This is a displacement significance, not the vertex fit: AAFSEC
 //          fits the vertex (ccFVT3 / ccFV23) but its `chi2sv(nhypo) = chi2vs`
 //          is commented out, so the fit's chi2 is not kept in any common
+//          (the converter recovers it from the fit call, see AabtagSvFit.h)
 //   CSEC   cosine of the angle between the momentum and the PV->SV direction,
 //          never filled: its assignment in AAFSEC is commented out too, so
 //          it stays 0
